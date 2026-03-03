@@ -22,6 +22,18 @@ func Run(db *store.DB) ([]store.Finding, error) {
 		return nil, nil
 	}
 
+	// Save each command pair as a note event; collect row IDs for evidence linking.
+	pairRowIDs := make([]int64, len(pairs))
+	for i, p := range pairs {
+		rowID, err := db.SaveCommandPairNote(p.Timestamp, p.Command, p.Output)
+		if err != nil {
+			// Non-fatal: evidence linking degrades gracefully.
+			pairRowIDs[i] = 0
+		} else {
+			pairRowIDs[i] = rowID
+		}
+	}
+
 	phases := ClusterPairs(pairs, 5*time.Minute)
 	prompt := BuildPrompt(phases, db.SessionID)
 
@@ -30,7 +42,7 @@ func Run(db *store.DB) ([]store.Finding, error) {
 		return nil, err
 	}
 
-	findings, err := ParseFindings(response, db.SessionID)
+	findings, err := ParseFindings(response, db.SessionID, pairRowIDs)
 	if err != nil {
 		return nil, err
 	}

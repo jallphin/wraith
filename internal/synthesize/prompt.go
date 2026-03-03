@@ -198,7 +198,7 @@ func callOpenAI(prompt, key string) (string, error) {
 	return out.Choices[0].Message.Content, nil
 }
 
-func ParseFindings(response, sessionID string) ([]store.Finding, error) {
+func ParseFindings(response, sessionID string, pairRowIDs []int64) ([]store.Finding, error) {
 	jsonBlob, err := extractJSONArray(response)
 	if err != nil {
 		return nil, err
@@ -237,10 +237,11 @@ func ParseFindings(response, sessionID string) ([]store.Finding, error) {
 			UpdatedAt: now,
 		}
 		for _, ref := range entry.CmdRefs {
-			if ref <= 0 {
+			idx := ref - 1 // cmd_refs are 1-based
+			if idx < 0 || idx >= len(pairRowIDs) || pairRowIDs[idx] == 0 {
 				continue
 			}
-			finding.EventIDs = append(finding.EventIDs, int64(ref))
+			finding.EventIDs = append(finding.EventIDs, pairRowIDs[idx])
 		}
 		findings = append(findings, finding)
 	}

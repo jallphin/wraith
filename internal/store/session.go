@@ -159,3 +159,25 @@ func (db *DB) LoadEventTexts(ids []int64) ([]string, error) {
 	}
 	return out, nil
 }
+
+// SaveCommandPairNote saves a reconstructed command pair as a note event for evidence linking.
+// Returns the inserted row ID.
+func (db *DB) SaveCommandPairNote(ts time.Time, command, output string) (int64, error) {
+	var text string
+	if output != "" {
+		text = "$ " + command + "\n\n" + output
+	} else {
+		text = "$ " + command
+	}
+	result, err := db.conn.Exec(
+		`INSERT INTO events (kind, ts, data, note) VALUES (?, ?, ?, ?)`,
+		"note",
+		ts.UnixMilli(),
+		nil,
+		text,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
