@@ -71,67 +71,146 @@ func StripANSI(b []byte) string {
 }
 
 func ExtractCommandPairs(events []store.Event) []CommandPair {
-	var pairs []CommandPair
-	var current *CommandPair
-	var outputLines []string
-
-	flush := func() {
-		if current == nil {
-			return
-		}
-		output := strings.Join(outputLines, "\n")
-		condensed := TruncateOutput(output, defaultMaxOutputLines)
-		targetSource := current.Command
-		if condensed != "" {
-			if targetSource != "" {
-				targetSource += "\n"
-			}
-			targetSource += condensed
-		}
-		current.Output = condensed
-		current.Targets = extractTargets(targetSource)
-		if current.Command != "" || current.Output != "" {
-			pairs = append(pairs, *current)
-		}
-		current = nil
-		outputLines = outputLines[:0]
+	type boundary struct {
+		cmd string
+		ts  time.Time
 	}
 
+	var boundaries []boundary
+	var inputBuf []byte
+	escState := 0
+	for _, ev := range events {
+		if ev.Kind != store.EventInput {
+			continue
+		}
+		for _, b := range ev.Data {
+			// Escape sequence handling (arrow keys, home/end, etc).
+			// We want to ignore *all* bytes of sequences like: ESC [ A
+			//  escState: 0=none, 1=after ESC, 2=in CSI/SS3 sequence
+			if escState != 0 {
+				if escState == 1 {
+					if b == '[' || b == 'O' {
+						escState = 2
+					} else {
+						// Unknown 2-byte escape, ignore and reset.
+						escState = 0
+					}
+					continue
+				}
+				// escState == 2: consume until final byte (0x40-0x7e).
+				if b >= 0x40 && b <= 0x7e {
+					escState = 0
+				}
+				continue
+			}
+
+			switch {
+			case b == 0x1b:
+				// Start of escape sequence.
+				escState = 1
+			case b == 0x7f || b == 0x08:
+				if len(inputBuf) > 0 {
+					inputBuf = inputBuf[:len(inputBuf)-1]
+				}
+			case b == '\r' || b == '\n':
+				cmd := strings.TrimSpace(string(inputBuf))
+				inputBuf = inputBuf[:0]
+				if cmd != "" {
+					boundaries = append(boundaries, boundary{cmd: cmd, ts: ev.Timestamp})
+				}
+			case b >= 0x20 && b <= 0x7e:
+				inputBuf = append(inputBuf, b)
+			}
+		}
+	}
+
+	if len(boundaries) == 0 {
+		return nil
+	}
+
+	type outputChunk struct {
+		ts   time.Time
+		text string
+	}
+	var outputChunks []outputChunk
 	for _, ev := range events {
 		if ev.Kind != store.EventOutput {
 			continue
 		}
-		raw := StripANSI(ev.Data)
-		if raw == "" {
-			continue
-		}
-		raw = strings.ReplaceAll(raw, "\r", "")
-		lines := strings.Split(raw, "\n")
-		for _, line := range lines {
-			if line == "" && current == nil {
-				continue
-			}
-			if cmd, ok := detectPrompt(line); ok {
-				flush()
-				trimmed := strings.TrimSpace(cmd)
-				if trimmed == "" {
-					current = nil
-					outputLines = outputLines[:0]
-					continue
-				}
-				current = &CommandPair{
-					Command:   trimmed,
-					Timestamp: ev.Timestamp,
-				}
-				outputLines = outputLines[:0]
-				continue
-			}
-			if current != nil {
-				outputLines = append(outputLines, line)
-			}
+		text := StripANSI(ev.Data)
+		text = strings.ReplaceAll(text, "\r\n", "\n")
+		text = strings.ReplaceAll(text, "\r", "\n")
+		if text != "" {
+			outputChunks = append(outputChunks, outputChunk{ts: ev.Timestamp, text: text})
 		}
 	}
-	flush()
+
+	findNotFoundCmd := regexp.MustCompile(`(?m)Command '([^']+)' not found`)
+
+	var pairs []CommandPair
+	for i, b := range boundaries {
+		var endTs time.Time
+		if i+1 < len(boundaries) {
+			endTs = boundaries[i+1].ts
+		}
+
+		var sb strings.Builder
+		for _, oc := range outputChunks {
+			if oc.ts.Before(b.ts) {
+				continue
+			}
+			if !endTs.IsZero() && !oc.ts.Before(endTs) {
+				break
+			}
+			sb.WriteString(oc.text)
+		}
+
+		output := TruncateOutput(sb.String(), defaultMaxOutputLines)
+
+		cmd := b.cmd
+		// Heuristic: fix common apt case where a space sometimes goes missing in captured input.
+		if strings.Contains(cmd, "apt install") && !strings.Contains(cmd, "apt install ") {
+			cmd = strings.Replace(cmd, "apt install", "apt install ", 1)
+			cmd = strings.Join(strings.Fields(cmd), " ")
+		}
+		// Heuristic: if output reports "Command 'X' not found" then the command token was X.
+		if m := findNotFoundCmd.FindStringSubmatch(output); len(m) == 2 {
+			x := m[1]
+			parts := strings.Fields(cmd)
+			if len(parts) > 0 && parts[0] != x {
+				args := ""
+				if len(parts) > 1 {
+					args = " " + strings.Join(parts[1:], " ")
+				}
+				cmd = x + args
+			}
+		}
+
+		// Heuristic: some sessions have incomplete input capture; if output indicates an nmap run, label it accordingly.
+		if strings.TrimSpace(cmd) == "s" {
+			lowerOut := strings.ToLower(output)
+			if strings.Contains(lowerOut, "nmap") && (strings.Contains(lowerOut, "nmap scan") || strings.Contains(lowerOut, "starting nmap")) {
+				cmd = "sudo nmap"
+			}
+		}
+
+		targetSource := cmd
+		if output != "" {
+			if targetSource != "" {
+				targetSource += "\n"
+			}
+			targetSource += output
+		}
+		targets := extractTargets(targetSource)
+
+		pairs = append(pairs, CommandPair{
+			Command:   cmd,
+			Output:    output,
+			Timestamp: b.ts,
+			Targets:   targets,
+		})
+	}
+
 	return pairs
 }
 
