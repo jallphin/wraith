@@ -12,6 +12,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/jallphin/wraith/internal/store"
+	"golang.org/x/term"
 )
 
 // Run starts cmd inside a pty, mirrors I/O to the operator's terminal, and
@@ -40,11 +41,11 @@ func Run(cmd *exec.Cmd, db *store.DB) error {
 	}
 
 	// Put terminal in raw mode
-	oldState, err := pty.MakeRaw(int(os.Stdin.Fd()))
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		return err
 	}
-	defer pty.Restore(int(os.Stdin.Fd()), oldState)
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
 	// stdin → pty (capture input)
 	go func() {
