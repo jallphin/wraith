@@ -78,9 +78,10 @@ type anthropicMessage struct {
 }
 
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	Messages  []anthropicMessage `json:"messages"`
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	Temperature float64            `json:"temperature"`
+	Messages    []anthropicMessage `json:"messages"`
 }
 
 type anthropicResponse struct {
@@ -93,9 +94,10 @@ type anthropicResponse struct {
 
 func callAnthropic(prompt, key string) (string, error) {
 	payload := anthropicRequest{
-		Model:     "claude-sonnet-4-5",
-		MaxTokens: 2048,
-		Messages:  []anthropicMessage{{Role: "user", Content: prompt}},
+		Model:       "claude-sonnet-4-5",
+		MaxTokens:   2048,
+		Temperature: 0,
+		Messages:    []anthropicMessage{{Role: "user", Content: prompt}},
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -144,9 +146,10 @@ type openAIMessage struct {
 }
 
 type openAIRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	Messages  []openAIMessage `json:"messages"`
+	Model       string          `json:"model"`
+	MaxTokens   int             `json:"max_tokens"`
+	Temperature float64         `json:"temperature"`
+	Messages    []openAIMessage `json:"messages"`
 }
 
 type openAIResponse struct {
@@ -157,9 +160,10 @@ type openAIResponse struct {
 
 func callOpenAI(prompt, key string) (string, error) {
 	payload := openAIRequest{
-		Model:     "gpt-4.1",
-		MaxTokens: 2048,
-		Messages:  []openAIMessage{{Role: "user", Content: prompt}},
+		Model:       "gpt-4.1",
+		MaxTokens:   2048,
+		Temperature: 0,
+		Messages:    []openAIMessage{{Role: "user", Content: prompt}},
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
