@@ -8,13 +8,32 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jallphin/wraith/internal/capture"
 	"github.com/jallphin/wraith/internal/store"
-	"github.com/jallphin/wraith/internal/synthesize"
 	"github.com/jallphin/wraith/internal/tui"
 )
 
+var (
+	bannerArt = strings.TrimSpace(`
+                 _ __  __  
+ _      ___ __ ___(_) |_| |_ 
+| | /| / / '__/ _  | |  _|  _|
+| |/ |/ /| | | (_| | | |_| |_ 
+|__/|__/ |_|  \__,_|_|\__|\__|
+`)
+	bannerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250")).
+			Bold(true)
+	taglineStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
+	sessionStatusStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("70"))
+)
+
 func main() {
+	printBanner()
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wraith: cannot determine home dir: %v\n", err)
@@ -74,7 +93,7 @@ func cmdCapture(sessionDir string, shellArgs []string) error {
 	}
 	defer db.Close()
 
-	fmt.Fprintf(os.Stderr, "\033[2m[wraith] session %s — capturing\033[0m\n", sessionID)
+	fmt.Fprintln(os.Stderr, sessionStatusStyle.Render(fmt.Sprintf("[wraith] session %s — capturing", sessionID)))
 
 	shell := os.Getenv("SHELL")
 	if shell == "" {
@@ -86,7 +105,7 @@ func cmdCapture(sessionDir string, shellArgs []string) error {
 		fmt.Fprintf(os.Stderr, "wraith: session ended: %v\n", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "\033[2m[wraith] session %s — complete\033[0m\n", sessionID)
+	fmt.Fprintln(os.Stderr, sessionStatusStyle.Render(fmt.Sprintf("[wraith] session %s — complete", sessionID)))
 	return nil
 }
 
@@ -149,7 +168,7 @@ func cmdReview(sessionDir, id string) error {
 		return err
 	}
 	if len(findings) == 0 {
-		findings, err = synthesize.Run(db)
+		findings, err = tui.RunSynthesisWithSpinner(db)
 		if err != nil {
 			return err
 		}
@@ -183,4 +202,10 @@ func cmdNote(sessionDir, text string) error {
 	}
 	fmt.Printf("[wraith] note saved to session %s\n", meta.ID[:8])
 	return nil
+}
+
+func printBanner() {
+	fmt.Fprintln(os.Stderr, bannerStyle.Render(bannerArt))
+	fmt.Fprintln(os.Stderr, taglineStyle.Render(fmt.Sprintf("  red team session intelligence  v%s", Version)))
+	fmt.Fprintln(os.Stderr)
 }
