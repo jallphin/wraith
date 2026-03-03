@@ -86,7 +86,11 @@ type anthropicRequest struct {
 }
 
 type anthropicResponse struct {
-	Completion string `json:"completion"`
+	Completion string `json:"completion"` // legacy completions API
+	Content    []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"` // messages API
 }
 
 func callAnthropic(prompt, key string) (string, error) {
@@ -126,6 +130,12 @@ func callAnthropic(prompt, key string) (string, error) {
 	var out anthropicResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		return "", err
+	}
+	// Messages API returns content array; fall back to legacy completion field.
+	for _, c := range out.Content {
+		if c.Type == "text" && c.Text != "" {
+			return c.Text, nil
+		}
 	}
 	return out.Completion, nil
 }
