@@ -69,16 +69,25 @@ func (d findingDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	}
 	sevStyle := S.Severity[fi.f.Severity]
 
+	// Dynamically size title/asset based on available list width.
+	// Overhead: 1 (icon) + 1 (space) + 4 (sev) + 2 (spaces) + 2 (padding) = ~10
+	avail := m.Width() - 10
+	if avail < 20 {
+		avail = 20
+	}
+	titleW := avail * 2 / 3
+	assetW := avail - titleW
+
 	title := fi.f.Title
-	if len(title) > 18 {
-		title = title[:18]
+	if len(title) > titleW {
+		title = title[:titleW]
 	}
 	asset := fi.f.Asset
-	if len(asset) > 10 {
-		asset = asset[:10]
+	if len(asset) > assetW {
+		asset = asset[:assetW]
 	}
 
-	row := fmt.Sprintf("%s %s  %-4s %-10s", S.FindingStatusIcon.Render(statusIcon), sevStyle.Render(sev), title, asset)
+	row := fmt.Sprintf("%s %s  %-*s %-*s", S.FindingStatusIcon.Render(statusIcon), sevStyle.Render(sev), titleW, title, assetW, asset)
 
 	st := S.FindingRow
 	if selected {
