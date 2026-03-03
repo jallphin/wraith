@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jallphin/wraith/internal/capture"
 	"github.com/jallphin/wraith/internal/store"
@@ -42,6 +43,16 @@ func main() {
 			}
 			if err := cmdReview(sessionDir, id); err != nil {
 				fmt.Fprintf(os.Stderr, "wraith review: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "note":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: wraith note <text>")
+				os.Exit(1)
+			}
+			if err := cmdNote(sessionDir, strings.Join(args[1:], " ")); err != nil {
+				fmt.Fprintf(os.Stderr, "wraith note: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -151,4 +162,25 @@ func cmdReview(sessionDir, id string) error {
 	meta.ID = db.SessionID
 	meta.FindingCount = len(findings)
 	return tui.Run(db, meta, findings)
+}
+
+func cmdNote(sessionDir, text string) error {
+	meta, err := store.MostRecentSession(sessionDir)
+	if err != nil {
+		return err
+	}
+	db, err := store.OpenSession(meta.Path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := db.WriteEvent(store.Event{
+		Kind:      store.EventNote,
+		Timestamp: time.Now(),
+		Note:      text,
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("[wraith] note saved to session %s\n", meta.ID[:8])
+	return nil
 }

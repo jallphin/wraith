@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unsafe"
@@ -213,6 +214,29 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 		})
 	}
 
+	// Phase 3: inject operator notes as special command pairs
+	for _, ev := range events {
+		if ev.Kind != store.EventNote || ev.Note == "" {
+			continue
+		}
+		pairs = append(pairs, CommandPair{
+			Index:     len(pairs) + 1,
+			Command:   "[operator note]",
+			Output:    ev.Note,
+			Timestamp: ev.Timestamp,
+			Targets:   extractTargets(ev.Note),
+		})
+	}
+
+	// Sort all pairs by timestamp
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].Timestamp.Before(pairs[j].Timestamp)
+	})
+	// Re-assign indices after sort
+	for i := range pairs {
+		pairs[i].Index = i + 1
+	}
+
 	return pairs
 }
 
@@ -220,9 +244,12 @@ func TruncateOutput(output string, maxLines int) string {
 	if maxLines <= 0 {
 		maxLines = defaultMaxOutputLines
 	}
+
 	if summary, ok := summarizeNmap(output); ok {
-		output = summary
+		return summary
 	}
+
+	output = strings.TrimSpace(output)
 	if output == "" {
 		return ""
 	}
@@ -232,38 +259,90 @@ func TruncateOutput(output string, maxLines int) string {
 		return output
 	}
 
-	head := 20
-	tail := 5
-	if head+tail >= len(lines) {
-		head = len(lines) - tail
-		if head < 0 {
-			head = 0
+	const bannerLines = 5
+	const tailLines = 3
+	const maxSignalLines = 40
+
+	bannerEnd := bannerLines
+	if bannerEnd > len(lines) {
+		bannerEnd = len(lines)
+	}
+
+	tailStart := len(lines) - tailLines
+	if tailStart < bannerEnd {
+		tailStart = bannerEnd
+	}
+	if tailStart < 0 {
+		tailStart = 0
+	}
+
+	banner := lines[:bannerEnd]
+	tail := lines[tailStart:]
+	middle := lines[bannerEnd:tailStart]
+
+	var signalLines []string
+	for _, line := range middle {
+		if isSignalLine(line) {
+			signalLines = append(signalLines, line)
+			if len(signalLines) >= maxSignalLines {
+				break
+			}
 		}
 	}
 
 	var sb strings.Builder
-	for i := 0; i < head; i++ {
-		sb.WriteString(lines[i])
+	for _, l := range banner {
+		sb.WriteString(l)
 		sb.WriteByte('\n')
 	}
-
-	skipped := len(lines) - head - tail
-	if skipped > 0 {
-		sb.WriteString(fmt.Sprintf("[... %d lines truncated ...]\n", skipped))
+	if len(signalLines) > 0 {
+		sb.WriteString(fmt.Sprintf("[... %d lines — showing %d signal lines ...]\n", len(middle), len(signalLines)))
+		for _, l := range signalLines {
+			sb.WriteString(l)
+			sb.WriteByte('\n')
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("[... %d lines truncated ...]\n", len(middle)))
 	}
-
-	start := len(lines) - tail
-	if start < head {
-		start = head
-	}
-	for i := start; i < len(lines); i++ {
-		sb.WriteString(lines[i])
-		if i < len(lines)-1 {
+	for i, l := range tail {
+		sb.WriteString(l)
+		if i < len(tail)-1 {
 			sb.WriteByte('\n')
 		}
 	}
 
 	return sb.String()
+}
+
+func isSignalLine(line string) bool {
+	l := strings.TrimSpace(line)
+	if l == "" {
+		return false
+	}
+	noisePatterns := []string{
+		"Progress:", "progress:", "[\\", "===", "---", "...",
+		"Trying", "Testing", "Checking",
+	}
+	for _, p := range noisePatterns {
+		if strings.Contains(l, p) {
+			return false
+		}
+	}
+	signalPatterns := []string{
+		" 200 ", " 301 ", " 302 ", " 403 ", " 500 ", "(Status: 2", "(Status: 3", "(Status: 4",
+		"Found:", "found:", "[+]", "[FOUND]",
+		"open", "Open",
+		"Login successful", "Login Success", "Valid credentials",
+		"Username:", "Password:", "hash",
+		"/usr/bin/", "/usr/local/", "cap_", "SUID", "SGID",
+		"uid=0", "root",
+	}
+	for _, p := range signalPatterns {
+		if strings.Contains(l, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func summarizeNmap(output string) (string, bool) {
