@@ -480,7 +480,12 @@ func (m *Model) refreshDetail() {
 		m.narrative.SetContent("")
 		return
 	}
-	m.narrative.SetContent(strings.TrimSpace(f.Narrative))
+	w := m.narrative.Width
+	if w <= 0 {
+		w = 60
+	}
+	wrapped := lipgloss.NewStyle().Width(w).Render(strings.TrimSpace(f.Narrative))
+	m.narrative.SetContent(wrapped)
 	m.list.SetDelegate(findingDelegate{m: m})
 }
 

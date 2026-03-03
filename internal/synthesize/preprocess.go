@@ -23,6 +23,7 @@ var (
 )
 
 type CommandPair struct {
+	Index     int
 	Command   string
 	Output    string
 	Timestamp time.Time
@@ -204,6 +205,7 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 		targets := extractTargets(targetSource)
 
 		pairs = append(pairs, CommandPair{
+			Index:     len(pairs) + 1,
 			Command:   cmd,
 			Output:    output,
 			Timestamp: b.ts,

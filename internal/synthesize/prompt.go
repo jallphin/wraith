@@ -21,9 +21,9 @@ func BuildPrompt(phases []Phase, sessionID string) string {
 are grouped into phases below. Identify security findings.
 
 Return a JSON array of findings matching this exact schema:
-[{"title": "string", "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO", "asset": "string (hostname/IP or description)", "technique": "string (MITRE ATT&CK ID and name if applicable)", "phase": "string (Reconnaissance|Initial Access|Execution|Persistence|Privilege Escalation|Lateral Movement|Collection|Exfiltration|Impact|Other)", "narrative": "string (2-4 sentences describing the finding)"}]
+[{"title": "string", "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO", "asset": "string (hostname/IP or description)", "technique": "string (MITRE ATT&CK ID and name if applicable)", "phase": "string (Reconnaissance|Initial Access|Execution|Persistence|Privilege Escalation|Lateral Movement|Collection|Exfiltration|Impact|Other)", "narrative": "string (2-4 sentences describing the finding)", "cmd_refs": [1, 2]}]
 
-Only include genuine security findings. If nothing notable, return [].
+Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that directly support each finding. Only include genuine security findings. If nothing notable, return [].
 
 `)
 	b.WriteString(fmt.Sprintf("Session ID: %s\n", sessionID))
@@ -46,9 +46,7 @@ Only include genuine security findings. If nothing notable, return [].
 			b.WriteString("Targets: none\n")
 		}
 		for _, pair := range phase.Pairs {
-			b.WriteString("$ ")
-			b.WriteString(pair.Command)
-			b.WriteByte('\n')
+			b.WriteString(fmt.Sprintf("[cmd:%d] $ %s\n", pair.Index, pair.Command))
 			if pair.Output != "" {
 				b.WriteString(pair.Output)
 				if !strings.HasSuffix(pair.Output, "\n") {
@@ -213,6 +211,7 @@ func ParseFindings(response, sessionID string) ([]store.Finding, error) {
 		Technique string `json:"technique"`
 		Phase     string `json:"phase"`
 		Narrative string `json:"narrative"`
+		CmdRefs   []int  `json:"cmd_refs"`
 	}
 	if err := json.Unmarshal([]byte(jsonBlob), &entries); err != nil {
 		return nil, err
@@ -236,6 +235,12 @@ func ParseFindings(response, sessionID string) ([]store.Finding, error) {
 			Status:    store.StatusProposed,
 			CreatedAt: now,
 			UpdatedAt: now,
+		}
+		for _, ref := range entry.CmdRefs {
+			if ref <= 0 {
+				continue
+			}
+			finding.EventIDs = append(finding.EventIDs, int64(ref))
 		}
 		findings = append(findings, finding)
 	}
