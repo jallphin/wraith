@@ -1,0 +1,17 @@
+# Build output
+wraith
+/bin/
+
+# Go
+vendor/
+*.test
+*.out
+
+# Session data — never commit captures
+~/.wraith/
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
