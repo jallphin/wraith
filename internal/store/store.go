@@ -55,6 +55,20 @@ func NewSession(dir string) (*DB, string, error) {
 			key   TEXT PRIMARY KEY,
 			value TEXT
 		);
+		CREATE TABLE IF NOT EXISTS findings (
+			id         TEXT    PRIMARY KEY,
+			session_id TEXT    NOT NULL,
+			title      TEXT    NOT NULL,
+			severity   INTEGER NOT NULL,
+			asset      TEXT,
+			technique  TEXT,
+			phase      TEXT,
+			narrative  TEXT,
+			event_ids  TEXT,
+			status     INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
 		INSERT OR IGNORE INTO meta (key, value) VALUES ('session_id', ?);
 	`, sessionID); err != nil {
 		conn.Close()
