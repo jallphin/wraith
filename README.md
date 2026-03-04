@@ -1,6 +1,6 @@
 <div align="center">
   <img src="docs/logo.png" alt="wraith" />
-  <p><strong>Red team session intelligence. Capture everything. Miss nothing.</strong></p>
+  <strong>Red team session intelligence. Capture everything. Miss nothing.</strong>
 
   <p>
     <img src="https://img.shields.io/badge/go-1.21+-00ADD8?style=flat-square&logo=go&logoColor=white"/>
@@ -9,9 +9,7 @@
     <img src="https://img.shields.io/badge/status-active-success?style=flat-square"/>
   </p>
 </div>
-
 ---
-
 Wraith wraps your shell in a silent PTY layer — no prefixes, no hotkeys, no broken flow. Every keystroke and output event is timestamped and written to a local SQLite database. When you're done, an AI synthesis pipeline reads the session, clusters activity by target and phase, maps findings to MITRE ATT&CK techniques, and drops them into a terminal TUI for operator review.
 
 Approve what's accurate. Edit what needs polish. Export when you're ready. That's it.
