@@ -27,7 +27,7 @@ Return a JSON array of findings matching this exact schema:
   "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
   "asset": "string",
   "technique": "string (MITRE ATT&CK ID and name)",
-  "phase": "string",
+  "phase": "Reconnaissance|Initial Access|Execution|Persistence|Privilege Escalation|Lateral Movement|Collection|Exfiltration|Impact|Other",
   "narrative": "string (2-4 sentences)",
   "cve": "string or null (CVE ID if a known CVE applies, otherwise null)",
   "cvss_score": "number or null (CVSS 3.1 base score 0.0-10.0)",
@@ -86,7 +86,7 @@ func CallAI(prompt string, cfg config.Config) (string, error) {
 	if key := strings.TrimSpace(cfg.AI.AnthropicKey); key != "" {
 		return callAnthropic(prompt, key, "claude-sonnet-4-5")
 	}
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
 		return callAnthropic(prompt, key, "claude-sonnet-4-5")
 	}
 	if key := strings.TrimSpace(cfg.AI.OpenAIKey); key != "" {
