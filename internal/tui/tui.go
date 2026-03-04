@@ -240,6 +240,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resize()
+		// Re-select item 0 after resize so paginator has correct PerPage
+		// and cursor lands on the first visible item.
+		m.list.Select(0)
 		return m, nil
 	case errMsg:
 		m.statusMsg = msg.err.Error()
@@ -364,7 +367,8 @@ func (m Model) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) resize() {
 	headerH := 1
 	statusH := 1
-	bodyH := m.height - headerH - statusH
+	separators := 2 // two \n between header+body+status in View()
+	bodyH := m.height - headerH - statusH - separators
 	if bodyH < 5 {
 		bodyH = 5
 	}
@@ -443,7 +447,8 @@ const timeSecond = 1_000_000_000
 func (m Model) renderBody() string {
 	headerH := 1
 	statusH := 1
-	bodyH := m.height - headerH - statusH
+	separators := 2 // two \n between header+body+status in View()
+	bodyH := m.height - headerH - statusH - separators
 
 	leftW := int(float64(m.width) * 0.25)
 	if leftW < 24 {
