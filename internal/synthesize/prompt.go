@@ -104,17 +104,33 @@ func truncateLines(s string, n int) string {
 }
 
 func CallAI(prompt string, cfg config.Config) (string, error) {
+	// Model overrides: use cfg.AI.Model if set, otherwise defaults per provider.
+	anthropicModel := "claude-sonnet-4-5"
+	openaiModel := "gpt-4.1"
+	if m := strings.TrimSpace(cfg.AI.Model); m != "" {
+		// If model looks like an Anthropic model, use it for Anthropic; otherwise OpenAI.
+		if strings.HasPrefix(m, "claude") {
+			anthropicModel = m
+		} else {
+			openaiModel = m
+		}
+	}
+
 	if key := strings.TrimSpace(cfg.AI.AnthropicKey); key != "" {
-		return callAnthropic(prompt, key, "claude-sonnet-4-5")
+		return callAnthropic(prompt, key, anthropicModel)
 	}
 	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
-		return callAnthropic(prompt, key, "claude-sonnet-4-5")
+		return callAnthropic(prompt, key, anthropicModel)
 	}
 	if key := strings.TrimSpace(cfg.AI.OpenAIKey); key != "" {
-		return callOpenAI(prompt, key, "gpt-4.1")
+		return callOpenAI(prompt, key, openaiModel)
 	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		return callOpenAI(prompt, key, "gpt-4.1")
+		return callOpenAI(prompt, key, openaiModel)
+	}
+	// Fall back to openclaw's OpenAI Codex OAuth token if available.
+	if key := config.ReadOpenAICodexToken(); key != "" {
+		return callOpenAI(prompt, key, openaiModel)
 	}
 	return "", fmt.Errorf("no AI API key configured")
 }

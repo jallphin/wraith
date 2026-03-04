@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -55,6 +56,32 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// ReadOpenAICodexToken reads the current OpenAI Codex OAuth access token from
+// openclaw's auth-profiles.json. Returns empty string if not found.
+func ReadOpenAICodexToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		Profiles map[string]struct {
+			Access string `json:"access"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return ""
+	}
+	if p, ok := doc.Profiles["openai-codex:default"]; ok {
+		return p.Access
+	}
+	return ""
+}
+
 // WriteExample writes a commented example config to ~/.wraith/config.toml
 // if it doesn't already exist.
 func WriteExample() error {
@@ -85,8 +112,10 @@ name = ""         # Your operator handle
 # box = ""        # Defaults to hostname
 
 [ai]
-# anthropic_key = ""  # Falls back to ANTHROPIC_API_KEY env var
-# openai_key = ""     # Falls back to OPENAI_API_KEY env var
+# model = ""           # Optional model override (e.g. "gpt-4.1", "gpt-5.2", "claude-sonnet-4-5")
+# anthropic_key = ""   # Falls back to ANTHROPIC_API_KEY env var
+# openai_key = ""      # Falls back to OPENAI_API_KEY env var
+# If neither is set, wraith will try openclaw's OpenAI Codex OAuth token automatically.
 `
 	return os.WriteFile(path, []byte(example), 0600)
 }
