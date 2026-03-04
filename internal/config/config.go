@@ -56,29 +56,46 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// ReadOpenAICodexToken reads the current OpenAI Codex OAuth access token from
-// openclaw's auth-profiles.json. Returns empty string if not found.
+// ReadOpenAICodexToken reads the current OpenAI Codex OAuth access token.
+// Checks two locations in order:
+//  1. ~/.openclaw/agents/main/agent/auth-profiles.json (openclaw gateway install)
+//  2. ~/.codex/auth.json (standalone openai/codex CLI install)
+//
+// Returns empty string if not found in either location.
 func ReadOpenAICodexToken() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	path := filepath.Join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
+
+	// 1. openclaw auth-profiles
+	clawPath := filepath.Join(home, ".openclaw", "agents", "main", "agent", "auth-profiles.json")
+	if data, err := os.ReadFile(clawPath); err == nil {
+		var doc struct {
+			Profiles map[string]struct {
+				Access string `json:"access"`
+			} `json:"profiles"`
+		}
+		if err := json.Unmarshal(data, &doc); err == nil {
+			if p, ok := doc.Profiles["openai-codex:default"]; ok && p.Access != "" {
+				return p.Access
+			}
+		}
 	}
-	var doc struct {
-		Profiles map[string]struct {
-			Access string `json:"access"`
-		} `json:"profiles"`
+
+	// 2. standalone codex CLI (~/.codex/auth.json)
+	codexPath := filepath.Join(home, ".codex", "auth.json")
+	if data, err := os.ReadFile(codexPath); err == nil {
+		var doc struct {
+			Tokens struct {
+				AccessToken string `json:"access_token"`
+			} `json:"tokens"`
+		}
+		if err := json.Unmarshal(data, &doc); err == nil && doc.Tokens.AccessToken != "" {
+			return doc.Tokens.AccessToken
+		}
 	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return ""
-	}
-	if p, ok := doc.Profiles["openai-codex:default"]; ok {
-		return p.Access
-	}
+
 	return ""
 }
 
