@@ -206,6 +206,7 @@ func NewModel(db *store.DB, meta store.SessionMeta, findings []store.Finding, cf
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(false)
 	l.SetShowPagination(false)
+	l.Select(0) // always start at first item
 
 	vp := viewport.New(0, 0)
 	evp := viewport.New(0, 0)
@@ -380,16 +381,21 @@ func (m *Model) resize() {
 		rightW = 20
 	}
 
-	m.list.SetSize(leftW-2, bodyH-3) // inside border, minus 1 for FINDINGS title row
+	// Border adds 2 rows (top+bottom) + 2 cols (left+right) to outer dimensions.
+	// PaneBorder.Height(h) sets INNER height → outer = h+2.
+	// We want outer = bodyH, so inner = bodyH-2, content = bodyH-2 (passed to render funcs).
+	// List inner = bodyH-2 minus 1 title row = bodyH-3.
+	innerH := bodyH - 2
+	m.list.SetSize(leftW-2, innerH-1) // innerH minus title row
 	m.narrative.Width = rightW - 2
-	m.narrative.Height = bodyH - 8
+	m.narrative.Height = innerH - 6
 	if m.narrative.Height < 3 {
 		m.narrative.Height = 3
 	}
 	m.evidence.Width = rightW - 2
-	m.evidence.Height = bodyH - 4
+	m.evidence.Height = innerH - 2
 	m.editor.SetWidth(rightW - 6)
-	m.editor.SetHeight(bodyH - 10)
+	m.editor.SetHeight(innerH - 8)
 	if m.editor.Height() < 3 {
 		m.editor.SetHeight(3)
 	}
@@ -448,12 +454,13 @@ func (m Model) renderBody() string {
 	}
 	rightW := m.width - leftW
 
-	left := S.PaneBorder.Width(leftW).Height(bodyH).Render(m.renderListPane(leftW-2, bodyH-2))
+	innerH := bodyH - 2 // border adds 2 rows; set inner height so outer = bodyH
+	left := S.PaneBorder.Width(leftW).Height(innerH).Render(m.renderListPane(leftW-2, innerH))
 	var right string
 	if m.showEvidence {
-		right = S.PaneBorder.Width(rightW).Height(bodyH).Render(m.renderEvidencePane(rightW-2, bodyH-2))
+		right = S.PaneBorder.Width(rightW).Height(innerH).Render(m.renderEvidencePane(rightW-2, innerH))
 	} else {
-		right = S.PaneBorder.Width(rightW).Height(bodyH).Render(m.renderDetailPane(rightW-2, bodyH-2))
+		right = S.PaneBorder.Width(rightW).Height(innerH).Render(m.renderDetailPane(rightW-2, innerH))
 	}
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
