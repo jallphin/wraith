@@ -48,6 +48,11 @@ Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that d
 	}
 	b.WriteString(fmt.Sprintf("Session ID: %s\n", sessionID))
 
+	// Hard budget: ~140k chars ≈ 35k tokens, well under 200k token limit.
+	// Reserve ~2k chars for the header/schema above.
+	const maxBodyChars = 140_000
+	bodyStart := b.Len()
+
 	for _, phase := range phases {
 		start := "--"
 		end := "--"
@@ -57,19 +62,23 @@ Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that d
 		if !phase.End.IsZero() {
 			end = phase.End.Format("15:04")
 		}
-		b.WriteString(fmt.Sprintf("\n--- %s (%s - %s) ---\n", phase.Label, start, end))
+		phaseHeader := fmt.Sprintf("\n--- %s (%s - %s) ---\n", phase.Label, start, end)
 		if len(phase.Targets) > 0 {
-			b.WriteString("Targets: ")
-			b.WriteString(strings.Join(phase.Targets, ", "))
-			b.WriteByte('\n')
-		} else {
-			b.WriteString("Targets: none\n")
+			phaseHeader += "Targets: " + strings.Join(phase.Targets, ", ") + "\n"
 		}
+		b.WriteString(phaseHeader)
+
 		for _, pair := range phase.Pairs {
+			if b.Len()-bodyStart > maxBodyChars {
+				b.WriteString("\n[... session truncated: prompt budget exceeded ...]\n")
+				goto done
+			}
+			// Cap each command output hard at 20 lines to stay lean.
+			out := truncateLines(pair.Output, 20)
 			b.WriteString(fmt.Sprintf("[cmd:%d] $ %s\n", pair.Index, pair.Command))
-			if pair.Output != "" {
-				b.WriteString(pair.Output)
-				if !strings.HasSuffix(pair.Output, "\n") {
+			if out != "" {
+				b.WriteString(out)
+				if !strings.HasSuffix(out, "\n") {
 					b.WriteByte('\n')
 				}
 				b.WriteByte('\n')
@@ -78,8 +87,20 @@ Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that d
 			}
 		}
 	}
-
+done:
 	return strings.TrimSpace(b.String()) + "\n"
+}
+
+// truncateLines hard-caps output at n lines, adding a summary line if truncated.
+func truncateLines(s string, n int) string {
+	if s == "" {
+		return s
+	}
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n") + fmt.Sprintf("\n[+%d lines omitted]", len(lines)-n)
 }
 
 func CallAI(prompt string, cfg config.Config) (string, error) {
