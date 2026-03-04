@@ -121,7 +121,7 @@ type anthropicResponse struct {
 func callAnthropic(prompt, key, model string) (string, error) {
 	payload := anthropicRequest{
 		Model:       model,
-		MaxTokens:   2048,
+		MaxTokens:   4096,
 		Temperature: 0,
 		Messages:    []anthropicMessage{{Role: "user", Content: prompt}},
 	}
@@ -187,7 +187,7 @@ type openAIResponse struct {
 func callOpenAI(prompt, key, model string) (string, error) {
 	payload := openAIRequest{
 		Model:       model,
-		MaxTokens:   2048,
+		MaxTokens:   4096,
 		Temperature: 0,
 		Messages:    []openAIMessage{{Role: "user", Content: prompt}},
 	}
@@ -250,7 +250,7 @@ func ParseFindings(response, sessionID string, pairRowIDs []int64) ([]store.Find
 		CmdRefs    []int    `json:"cmd_refs"`
 	}
 	if err := json.Unmarshal([]byte(jsonBlob), &entries); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("json parse error: %w (raw snippet: %.200s)", err, jsonBlob)
 	}
 
 	now := time.Now().UTC()
