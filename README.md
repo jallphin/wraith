@@ -1,7 +1,5 @@
 <div align="center">
   <img src="docs/logo.png" alt="wraith" />
-
-  <h1>wraith</h1>
   <p><strong>Red team session intelligence. Capture everything. Miss nothing.</strong></p>
 
   <p>
