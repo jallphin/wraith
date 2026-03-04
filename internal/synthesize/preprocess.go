@@ -370,13 +370,17 @@ func summarizeNmap(output string) (string, bool) {
 				}
 			}
 		}
-		if strings.Contains(line, "/tcp") {
+		if strings.Contains(line, "/tcp") || strings.Contains(line, "/udp") {
 			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				port := parts[0]
-				if _, ok := seenPorts[port]; !ok {
-					seenPorts[port] = struct{}{}
-					ports = append(ports, port)
+			if len(parts) >= 2 {
+				state := strings.ToLower(parts[1])
+				// Only keep open (or open|filtered for UDP) — skip closed/filtered noise
+				if state == "open" || state == "open|filtered" {
+					port := parts[0]
+					if _, ok := seenPorts[port]; !ok {
+						seenPorts[port] = struct{}{}
+						ports = append(ports, port)
+					}
 				}
 			}
 		}
