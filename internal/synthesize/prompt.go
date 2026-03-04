@@ -12,20 +12,40 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jallphin/wraith/internal/config"
 	"github.com/jallphin/wraith/internal/store"
 )
 
-func BuildPrompt(phases []Phase, sessionID string) string {
+func BuildPrompt(phases []Phase, sessionID string, cfg config.Config) string {
 	var b strings.Builder
 	b.WriteString(`You are analyzing a red team engagement session. The operator's commands and outputs
 are grouped into phases below. Identify security findings.
 
 Return a JSON array of findings matching this exact schema:
-[{"title": "string", "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO", "asset": "string (hostname/IP or description)", "technique": "string (MITRE ATT&CK ID and name if applicable)", "phase": "string (Reconnaissance|Initial Access|Execution|Persistence|Privilege Escalation|Lateral Movement|Collection|Exfiltration|Impact|Other)", "narrative": "string (2-4 sentences describing the finding)", "cmd_refs": [1, 2]}]
+[{
+  "title": "string",
+  "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
+  "asset": "string",
+  "technique": "string (MITRE ATT&CK ID and name)",
+  "phase": "string",
+  "narrative": "string (2-4 sentences)",
+  "cve": "string or null (CVE ID if a known CVE applies, otherwise null)",
+  "cvss_score": "number or null (CVSS 3.1 base score 0.0-10.0)",
+  "cvss_vector": "string or null (full CVSS 3.1 vector string)",
+  "cwe": "string or null (most applicable CWE ID, e.g. CWE-269)",
+  "cpe": "string or null (CPE 2.3 for the vulnerable component if known)",
+  "tags": ["array", "of", "short", "lowercase", "tags"],
+  "cmd_refs": [1, 2]
+}]
+
+For misconfigurations with no known CVE, set cve and cpe to null but always populate cwe. Tags should be short lowercase descriptors like: privesc, weak-creds, idor, rce, lfi, misconfiguration, exposed-service, capabilities.
 
 Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that directly support each finding. Only include genuine security findings. If nothing notable, return [].
 
 `)
+	if cfg.Engagement.ID != "" {
+		b.WriteString(fmt.Sprintf("Engagement: %s | Client: %s | Scope: %s\n\n", cfg.Engagement.ID, cfg.Engagement.Client, strings.Join(cfg.Engagement.Scope, ", ")))
+	}
 	b.WriteString(fmt.Sprintf("Session ID: %s\n", sessionID))
 
 	for _, phase := range phases {
@@ -62,12 +82,18 @@ Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that d
 	return strings.TrimSpace(b.String()) + "\n"
 }
 
-func CallAI(prompt string) (string, error) {
+func CallAI(prompt string, cfg config.Config) (string, error) {
+	if key := strings.TrimSpace(cfg.AI.AnthropicKey); key != "" {
+		return callAnthropic(prompt, key, "claude-sonnet-4-5")
+	}
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		return callAnthropic(prompt, key)
+		return callAnthropic(prompt, key, "claude-sonnet-4-5")
+	}
+	if key := strings.TrimSpace(cfg.AI.OpenAIKey); key != "" {
+		return callOpenAI(prompt, key, "gpt-4.1")
 	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		return callOpenAI(prompt, key)
+		return callOpenAI(prompt, key, "gpt-4.1")
 	}
 	return "", fmt.Errorf("no AI API key configured")
 }
@@ -92,9 +118,9 @@ type anthropicResponse struct {
 	} `json:"content"` // messages API
 }
 
-func callAnthropic(prompt, key string) (string, error) {
+func callAnthropic(prompt, key, model string) (string, error) {
 	payload := anthropicRequest{
-		Model:       "claude-sonnet-4-5",
+		Model:       model,
 		MaxTokens:   2048,
 		Temperature: 0,
 		Messages:    []anthropicMessage{{Role: "user", Content: prompt}},
@@ -158,9 +184,9 @@ type openAIResponse struct {
 	} `json:"choices"`
 }
 
-func callOpenAI(prompt, key string) (string, error) {
+func callOpenAI(prompt, key, model string) (string, error) {
 	payload := openAIRequest{
-		Model:       "gpt-4.1",
+		Model:       model,
 		MaxTokens:   2048,
 		Temperature: 0,
 		Messages:    []openAIMessage{{Role: "user", Content: prompt}},
@@ -209,13 +235,19 @@ func ParseFindings(response, sessionID string, pairRowIDs []int64) ([]store.Find
 	}
 
 	var entries []struct {
-		Title     string `json:"title"`
-		Severity  string `json:"severity"`
-		Asset     string `json:"asset"`
-		Technique string `json:"technique"`
-		Phase     string `json:"phase"`
-		Narrative string `json:"narrative"`
-		CmdRefs   []int  `json:"cmd_refs"`
+		Title      string   `json:"title"`
+		Severity   string   `json:"severity"`
+		Asset      string   `json:"asset"`
+		Technique  string   `json:"technique"`
+		Phase      string   `json:"phase"`
+		Narrative  string   `json:"narrative"`
+		CVE        *string  `json:"cve"`
+		CVSSScore  *float64 `json:"cvss_score"`
+		CVSSVector *string  `json:"cvss_vector"`
+		CWE        *string  `json:"cwe"`
+		CPE        *string  `json:"cpe"`
+		Tags       []string `json:"tags"`
+		CmdRefs    []int    `json:"cmd_refs"`
 	}
 	if err := json.Unmarshal([]byte(jsonBlob), &entries); err != nil {
 		return nil, err
@@ -236,9 +268,25 @@ func ParseFindings(response, sessionID string, pairRowIDs []int64) ([]store.Find
 			Technique: entry.Technique,
 			Phase:     parsePhase(entry.Phase),
 			Narrative: entry.Narrative,
+			Tags:      entry.Tags,
 			Status:    store.StatusProposed,
 			CreatedAt: now,
 			UpdatedAt: now,
+		}
+		if entry.CVE != nil {
+			finding.CVE = *entry.CVE
+		}
+		if entry.CVSSScore != nil {
+			finding.CVSSScore = *entry.CVSSScore
+		}
+		if entry.CVSSVector != nil {
+			finding.CVSSVector = *entry.CVSSVector
+		}
+		if entry.CWE != nil {
+			finding.CWE = *entry.CWE
+		}
+		if entry.CPE != nil {
+			finding.CPE = *entry.CPE
 		}
 		for _, ref := range entry.CmdRefs {
 			idx := ref - 1 // cmd_refs are 1-based

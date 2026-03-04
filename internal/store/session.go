@@ -146,6 +146,22 @@ func MostRecentSession(dir string) (SessionMeta, error) {
 	return metas[0], nil
 }
 
+func FindSession(dir, id string) (SessionMeta, error) {
+	if id == "" {
+		return MostRecentSession(dir)
+	}
+	sessions, err := ListSessions(dir)
+	if err != nil {
+		return SessionMeta{}, err
+	}
+	for _, s := range sessions {
+		if s.ID == id || strings.HasPrefix(s.ID, id) {
+			return s, nil
+		}
+	}
+	return SessionMeta{}, fmt.Errorf("session not found: %s", id)
+}
+
 // LoadEventTexts loads event records by id and returns printable strings.
 func (db *DB) LoadEventTexts(ids []int64) ([]string, error) {
 	if len(ids) == 0 {

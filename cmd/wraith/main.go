@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jallphin/wraith/internal/capture"
+	"github.com/jallphin/wraith/internal/config"
 	"github.com/jallphin/wraith/internal/store"
 	"github.com/jallphin/wraith/internal/tui"
 )
@@ -30,6 +31,9 @@ var (
 
 func main() {
 	printBanner()
+
+	_ = config.WriteExample()
+	cfg, _ := config.Load()
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -57,7 +61,7 @@ func main() {
 			if len(args) > 1 {
 				id = args[1]
 			}
-			if err := cmdReview(sessionDir, id); err != nil {
+			if err := cmdReview(sessionDir, id, cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "wraith review: %v\n", err)
 				os.Exit(1)
 			}
@@ -67,8 +71,18 @@ func main() {
 				fmt.Fprintln(os.Stderr, "usage: wraith note <text>")
 				os.Exit(1)
 			}
-			if err := cmdNote(sessionDir, strings.Join(args[1:], " ")); err != nil {
+			if err := cmdNote(sessionDir, strings.Join(args[1:], " "), cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "wraith note: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "resyn":
+			id := ""
+			if len(args) > 1 {
+				id = args[1]
+			}
+			if err := cmdResyn(sessionDir, id, cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "wraith resyn: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -128,30 +142,10 @@ func cmdList(sessionDir string) error {
 	return nil
 }
 
-func cmdReview(sessionDir, id string) error {
-	var meta store.SessionMeta
-	var err error
-
-	if id == "" {
-		meta, err = store.MostRecentSession(sessionDir)
-		if err != nil {
-			return err
-		}
-	} else {
-		// accept short id prefix
-		sessions, err := store.ListSessions(sessionDir)
-		if err != nil {
-			return err
-		}
-		for _, s := range sessions {
-			if s.ID == id || strings.HasPrefix(s.ID, id) {
-				meta = s
-				break
-			}
-		}
-		if meta.Path == "" {
-			return fmt.Errorf("session not found: %s", id)
-		}
+func cmdReview(sessionDir, id string, cfg config.Config) error {
+	meta, err := store.FindSession(sessionDir, id)
+	if err != nil {
+		return err
 	}
 
 	db, err := store.OpenSession(meta.Path)
@@ -165,7 +159,7 @@ func cmdReview(sessionDir, id string) error {
 		return err
 	}
 	if len(findings) == 0 {
-		findings, err = tui.RunSynthesisWithSpinner(db)
+		findings, err = tui.RunSynthesisWithSpinner(db, cfg)
 		if err != nil {
 			return err
 		}
@@ -177,10 +171,42 @@ func cmdReview(sessionDir, id string) error {
 	// refresh meta counts
 	meta.ID = db.SessionID
 	meta.FindingCount = len(findings)
-	return tui.Run(db, meta, findings)
+	return tui.Run(db, meta, findings, cfg)
 }
 
-func cmdNote(sessionDir, text string) error {
+func cmdResyn(sessionDir, id string, cfg config.Config) error {
+	meta, err := store.FindSession(sessionDir, id)
+	if err != nil {
+		return err
+	}
+
+	db, err := store.OpenSession(meta.Path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if err := db.DeleteFindings(); err != nil {
+		return err
+	}
+	if err := db.DeleteNoteEvents(); err != nil {
+		return err
+	}
+
+	shortID := meta.ID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	fmt.Fprintf(os.Stderr, "[wraith] re-synthesizing session %s...\n", shortID)
+	findings, err := tui.RunSynthesisWithSpinner(db, cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "[wraith] %d findings generated\n", len(findings))
+	return nil
+}
+
+func cmdNote(sessionDir, text string, cfg config.Config) error {
 	meta, err := store.MostRecentSession(sessionDir)
 	if err != nil {
 		return err

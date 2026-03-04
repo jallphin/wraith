@@ -82,24 +82,24 @@ const (
 
 // Finding is an AI-proposed (and operator-reviewed) reportable item.
 type Finding struct {
-	ID        string
-	SessionID string
-	Title     string
-	Severity  Severity
-	Asset     string
-	Technique string
-	Phase     Phase
-	Narrative string
-	CVE       string
-	CVSSScore float64
+	ID         string
+	SessionID  string
+	Title      string
+	Severity   Severity
+	Asset      string
+	Technique  string
+	Phase      Phase
+	Narrative  string
+	CVE        string
+	CVSSScore  float64
 	CVSSVector string
-	CWE       string
-	CPE       string
-	Tags      []string
-	EventIDs  []int64
-	Status    FindingStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CWE        string
+	CPE        string
+	Tags       []string
+	EventIDs   []int64
+	Status     FindingStatus
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 func (db *DB) SaveFinding(f Finding) error {

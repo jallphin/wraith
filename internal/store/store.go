@@ -34,6 +34,11 @@ type DB struct {
 	SessionID string
 }
 
+// Conn exposes the underlying sql.DB for internal operations.
+func (db *DB) Conn() *sql.DB {
+	return db.conn
+}
+
 // NewSession opens (or creates) a session database and returns an open DB.
 func NewSession(dir string) (*DB, string, error) {
 	sessionID := fmt.Sprintf("%d", time.Now().UnixMilli())
@@ -183,4 +188,20 @@ func (db *DB) LoadEventsByID(ids []int64) ([]Event, error) {
 		out = append(out, evt)
 	}
 	return out, nil
+}
+
+func (db *DB) DeleteFindings() error {
+	if db == nil || db.conn == nil {
+		return fmt.Errorf("store: nil db")
+	}
+	_, err := db.conn.Exec(`DELETE FROM findings`)
+	return err
+}
+
+func (db *DB) DeleteNoteEvents() error {
+	if db == nil || db.conn == nil {
+		return fmt.Errorf("store: nil db")
+	}
+	_, err := db.conn.Exec(`DELETE FROM events WHERE kind='note'`)
+	return err
 }

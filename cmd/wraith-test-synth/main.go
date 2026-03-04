@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jallphin/wraith/internal/config"
 	"github.com/jallphin/wraith/internal/store"
 	"github.com/jallphin/wraith/internal/synthesize"
 )
@@ -52,7 +53,7 @@ func main() {
 		return
 	}
 
-	findings, err := synthesize.Run(db)
+	findings, err := synthesize.Run(db, config.Config{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "synthesize: %v\n", err)
 		os.Exit(1)

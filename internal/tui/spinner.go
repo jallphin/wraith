@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jallphin/wraith/internal/config"
 	"github.com/jallphin/wraith/internal/store"
 	"github.com/jallphin/wraith/internal/synthesize"
 )
@@ -47,22 +48,23 @@ type spinnerModel struct {
 	err      error
 	findings []store.Finding
 	db       *store.DB
+	cfg      config.Config
 }
 
-func newSpinnerModel(db *store.DB) spinnerModel {
+func newSpinnerModel(db *store.DB, cfg config.Config) spinnerModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	return spinnerModel{spinner: s, db: db, stage: stageAI}
+	return spinnerModel{spinner: s, db: db, cfg: cfg, stage: stageAI}
 }
 
 func (m spinnerModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, runSynthesis(m.db))
+	return tea.Batch(m.spinner.Tick, runSynthesis(m.db, m.cfg))
 }
 
-func runSynthesis(db *store.DB) tea.Cmd {
+func runSynthesis(db *store.DB, cfg config.Config) tea.Cmd {
 	return func() tea.Msg {
-		findings, err := synthesize.Run(db)
+		findings, err := synthesize.Run(db, cfg)
 		return synthDoneMsg{findings: findings, err: err}
 	}
 }
@@ -95,8 +97,8 @@ func (m spinnerModel) View() string {
 
 // RunSynthesisWithSpinner runs AI synthesis with a progress spinner.
 // Returns findings or error.
-func RunSynthesisWithSpinner(db *store.DB) ([]store.Finding, error) {
-	m := newSpinnerModel(db)
+func RunSynthesisWithSpinner(db *store.DB, cfg config.Config) ([]store.Finding, error) {
+	m := newSpinnerModel(db, cfg)
 	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
 	result, err := p.Run()
 	if err != nil {

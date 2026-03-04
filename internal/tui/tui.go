@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jallphin/wraith/internal/config"
 	"github.com/jallphin/wraith/internal/store"
 )
 
@@ -104,6 +105,7 @@ type Model struct {
 	sessionMeta store.SessionMeta
 	session     *store.DB
 	findings    []store.Finding
+	cfg         config.Config
 
 	// layout
 	width  int
@@ -126,7 +128,7 @@ type Model struct {
 	statusErr bool
 }
 
-func NewModel(db *store.DB, meta store.SessionMeta, findings []store.Finding) Model {
+func NewModel(db *store.DB, meta store.SessionMeta, findings []store.Finding, cfg config.Config) Model {
 	items := make([]list.Item, 0, len(findings))
 	for _, f := range findings {
 		items = append(items, findingItem{f: f})
@@ -153,6 +155,7 @@ func NewModel(db *store.DB, meta store.SessionMeta, findings []store.Finding) Mo
 		sessionMeta: meta,
 		session:     db,
 		findings:    findings,
+		cfg:         cfg,
 		focus:       paneList,
 		list:        l,
 		narrative:   vp,
@@ -609,7 +612,7 @@ func (m Model) mergeWithNext() tea.Cmd {
 
 func (m Model) exportApprovedCmd() tea.Cmd {
 	return func() tea.Msg {
-		jp, mp, err := ExportApproved(m.sessionMeta.ID, m.findings)
+		jp, mp, err := ExportApproved(m.session, m.sessionMeta, m.findings, m.cfg)
 		if err != nil {
 			return errMsg{err: err}
 		}
@@ -618,8 +621,8 @@ func (m Model) exportApprovedCmd() tea.Cmd {
 }
 
 // Run launches the Bubbletea program.
-func Run(db *store.DB, meta store.SessionMeta, findings []store.Finding) error {
-	p := tea.NewProgram(NewModel(db, meta, findings), tea.WithAltScreen())
+func Run(db *store.DB, meta store.SessionMeta, findings []store.Finding, cfg config.Config) error {
+	p := tea.NewProgram(NewModel(db, meta, findings, cfg), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

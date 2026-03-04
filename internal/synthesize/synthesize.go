@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jallphin/wraith/internal/config"
 	"github.com/jallphin/wraith/internal/store"
 )
 
-func Run(db *store.DB) ([]store.Finding, error) {
+func Run(db *store.DB, cfg config.Config) ([]store.Finding, error) {
 	if db == nil {
 		return nil, fmt.Errorf("synthesize: nil db")
 	}
@@ -35,9 +36,9 @@ func Run(db *store.DB) ([]store.Finding, error) {
 	}
 
 	phases := ClusterPairs(pairs, 5*time.Minute)
-	prompt := BuildPrompt(phases, db.SessionID)
+	prompt := BuildPrompt(phases, db.SessionID, cfg)
 
-	response, err := CallAI(prompt)
+	response, err := CallAI(prompt, cfg)
 	if err != nil {
 		return nil, err
 	}
