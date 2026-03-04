@@ -133,8 +133,8 @@ func (d findingDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	sevStyle := S.Severity[fi.f.Severity]
 
 	// Dynamically size title/asset based on available list width.
-	// Overhead: 1 (icon) + 1 (space) + 4 (sev) + 2 (spaces) + 2 (padding) = ~10
-	avail := m.Width() - 10
+	// Visible overhead: 1 (icon) + 1 (space) + 4 (sev) + 2 (spaces) = 8
+	avail := m.Width() - 8
 	if avail < 20 {
 		avail = 20
 	}
@@ -150,7 +150,11 @@ func (d findingDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		asset = asset[:assetW]
 	}
 
-	row := fmt.Sprintf("%s %s  %-*s %-*s", S.FindingStatusIcon.Render(statusIcon), sevStyle.Render(sev), titleW, title, assetW, asset)
+	// Pad manually to avoid fmt.Sprintf miscount caused by ANSI escape bytes in rendered strings.
+	titlePadded := title + strings.Repeat(" ", titleW-len(title))
+	assetPadded := asset + strings.Repeat(" ", assetW-len(asset))
+
+	row := fmt.Sprintf("%s %s  %s %s", S.FindingStatusIcon.Render(statusIcon), sevStyle.Render(sev), titlePadded, assetPadded)
 
 	st := S.FindingRow
 	if selected {

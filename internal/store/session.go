@@ -269,15 +269,22 @@ func (db *DB) SaveCommandPairNotesBatch(commands []string, outputs []string, tim
 }
 
 // cleanEvidenceText sanitizes raw evidence text for display.
-// Truncates runaway syslog/audit key=value lines that would overflow the terminal.
+// Filters and truncates noise lines that would clutter the evidence view.
 func cleanEvidenceText(text string) string {
-	const maxLineLen = 200
+	const maxLineLen = 160
 	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		// Detect structured log lines: >3 key=value pairs in a row → truncate.
-		if strings.Count(line, "=") >= 4 && len(line) > maxLineLen {
-			lines[i] = line[:maxLineLen] + " [...]"
+	out := lines[:0]
+	for _, line := range lines {
+		// Drop structured audit/syslog lines: contain multiple key=value; pairs
+		// e.g. "tart=ae00f8ab;user=ike;hostname=expressway.htb;machineid=..."
+		if strings.Count(line, "=") >= 4 && strings.Count(line, ";") >= 3 {
+			continue
 		}
+		// Truncate any remaining long lines
+		if len(line) > maxLineLen {
+			line = line[:maxLineLen] + " [...]"
+		}
+		out = append(out, line)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(out, "\n")
 }

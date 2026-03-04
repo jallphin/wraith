@@ -80,40 +80,70 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 
 	var boundaries []boundary
 	var inputBuf []byte
+	// escState tracks position in an escape sequence:
+	//   0 = normal
+	//   1 = seen ESC
+	//   2 = in CSI sequence (ESC [) — consume until final byte 0x40-0x7e or 0x7e
+	//   3 = in OSC sequence (ESC ]) — consume until BEL (0x07) or ST (ESC \)
 	escState := 0
 	for _, ev := range events {
 		if ev.Kind != store.EventInput {
 			continue
 		}
 		for _, b := range ev.Data {
-			// Escape sequence handling (arrow keys, home/end, etc).
-			// We want to ignore *all* bytes of sequences like: ESC [ A
-			//  escState: 0=none, 1=after ESC, 2=in CSI/SS3 sequence
 			if escState != 0 {
-				if escState == 1 {
-					if b == '[' || b == 'O' {
-						escState = 2
-					} else {
-						// Unknown 2-byte escape, ignore and reset.
+				switch escState {
+				case 1: // just saw ESC
+					switch {
+					case b == '[':
+						escState = 2 // CSI
+					case b == ']':
+						escState = 3 // OSC
+					case b == 'O':
+						escState = 2 // SS3 (function keys)
+					case b == 0x1b:
+						// ESC ESC — stay in state 1 (meta prefix), ignore
+					default:
+						// Unknown 2-byte escape — drop it, return to normal
+						escState = 0
+					}
+					continue
+				case 2: // in CSI/SS3 — consume until final byte (0x40-0x7e, includes ~=0x7e)
+					if (b >= 0x40 && b <= 0x7e) || b == 0x7e {
+						escState = 0
+					}
+					// parameter bytes (0x30-0x3f) and intermediate bytes (0x20-0x2f) — consume
+					continue
+				case 3: // in OSC — consume until BEL or ST
+					if b == 0x07 || b == 0x1b {
 						escState = 0
 					}
 					continue
 				}
-				// escState == 2: consume until final byte (0x40-0x7e).
-				if b >= 0x40 && b <= 0x7e {
-					escState = 0
-				}
-				continue
 			}
 
 			switch {
 			case b == 0x1b:
-				// Start of escape sequence.
 				escState = 1
 			case b == 0x7f || b == 0x08:
+				// Backspace / DEL — remove last char from buffer
 				if len(inputBuf) > 0 {
 					inputBuf = inputBuf[:len(inputBuf)-1]
 				}
+			case b == 0x15:
+				// Ctrl+U — kill line (clear entire input buffer)
+				inputBuf = inputBuf[:0]
+			case b == 0x17:
+				// Ctrl+W — delete last word
+				s := strings.TrimRight(string(inputBuf), " ")
+				if idx := strings.LastIndex(s, " "); idx >= 0 {
+					inputBuf = []byte(s[:idx+1])
+				} else {
+					inputBuf = inputBuf[:0]
+				}
+			case b == 0x03 || b == 0x04:
+				// Ctrl+C / Ctrl+D — discard current input (interrupted command)
+				inputBuf = inputBuf[:0]
 			case b == '\r' || b == '\n':
 				cmd := strings.TrimSpace(string(inputBuf))
 				inputBuf = inputBuf[:0]
