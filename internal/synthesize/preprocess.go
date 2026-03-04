@@ -78,14 +78,60 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 		ts  time.Time
 	}
 
+	// lineEditor simulates a readline-compatible line buffer with cursor tracking.
+	// This correctly handles arrow keys, backspace/delete, and editing shortcuts
+	// so that wraith reconstructs what was actually submitted, not the raw keystrokes.
+	type lineEditor struct {
+		buf []byte
+		pos int // cursor position (0 = before buf[0], len(buf) = after last char)
+	}
+	ed := &lineEditor{}
+
+	edInsert := func(b byte) {
+		ed.buf = append(ed.buf, 0)
+		copy(ed.buf[ed.pos+1:], ed.buf[ed.pos:])
+		ed.buf[ed.pos] = b
+		ed.pos++
+	}
+	edBackspace := func() {
+		if ed.pos > 0 {
+			ed.buf = append(ed.buf[:ed.pos-1], ed.buf[ed.pos:]...)
+			ed.pos--
+		}
+	}
+	edDelete := func() { // delete char at cursor (forward delete)
+		if ed.pos < len(ed.buf) {
+			ed.buf = append(ed.buf[:ed.pos], ed.buf[ed.pos+1:]...)
+		}
+	}
+	edClear := func() {
+		ed.buf = ed.buf[:0]
+		ed.pos = 0
+	}
+	edKillToEnd := func() { // Ctrl+K
+		ed.buf = ed.buf[:ed.pos]
+	}
+	edDeleteWord := func() { // Ctrl+W — delete word before cursor
+		end := ed.pos
+		// skip trailing spaces
+		for end > 0 && ed.buf[end-1] == ' ' {
+			end--
+		}
+		// skip word chars
+		for end > 0 && ed.buf[end-1] != ' ' {
+			end--
+		}
+		ed.buf = append(ed.buf[:end], ed.buf[ed.pos:]...)
+		ed.pos = end
+	}
+
 	var boundaries []boundary
-	var inputBuf []byte
-	// escState tracks position in an escape sequence:
-	//   0 = normal
-	//   1 = seen ESC
-	//   2 = in CSI sequence (ESC [) — consume until final byte 0x40-0x7e or 0x7e
-	//   3 = in OSC sequence (ESC ]) — consume until BEL (0x07) or ST (ESC \)
+
+	// escState tracks position in an escape sequence.
+	// We accumulate CSI parameter bytes to identify the specific sequence.
 	escState := 0
+	var csiParam []byte // accumulate CSI parameter bytes (digits + semicolons)
+
 	for _, ev := range events {
 		if ev.Kind != store.EventInput {
 			continue
@@ -97,26 +143,70 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 					switch {
 					case b == '[':
 						escState = 2 // CSI
+						csiParam = csiParam[:0]
 					case b == ']':
 						escState = 3 // OSC
 					case b == 'O':
-						escState = 2 // SS3 (function keys)
+						escState = 4 // SS3 (function keys like F1-F4)
 					case b == 0x1b:
-						// ESC ESC — stay in state 1 (meta prefix), ignore
+						// ESC ESC — meta prefix, stay in esc state
 					default:
-						// Unknown 2-byte escape — drop it, return to normal
 						escState = 0
 					}
 					continue
-				case 2: // in CSI/SS3 — consume until final byte (0x40-0x7e, includes ~=0x7e)
-					if (b >= 0x40 && b <= 0x7e) || b == 0x7e {
-						escState = 0
+				case 2: // in CSI — accumulate param bytes until final byte
+					if b >= 0x30 && b <= 0x3f { // param bytes: digits, ;, etc.
+						csiParam = append(csiParam, b)
+						continue
 					}
-					// parameter bytes (0x30-0x3f) and intermediate bytes (0x20-0x2f) — consume
+					// Final byte — decode the sequence
+					escState = 0
+					switch b {
+					case 'D': // cursor left (arrow left)
+						if ed.pos > 0 {
+							ed.pos--
+						}
+					case 'C': // cursor right (arrow right)
+						if ed.pos < len(ed.buf) {
+							ed.pos++
+						}
+					case 'H': // Home
+						ed.pos = 0
+					case 'F': // End
+						ed.pos = len(ed.buf)
+					case '~': // extended sequences: delete=3~, home=1~, end=4~, etc.
+						param := string(csiParam)
+						switch param {
+						case "3": // Delete key — forward delete
+							edDelete()
+						case "1", "7": // Home
+							ed.pos = 0
+						case "4", "8": // End
+							ed.pos = len(ed.buf)
+						case "1;5": // Ctrl+Right — skip word forward
+							for ed.pos < len(ed.buf) && ed.buf[ed.pos] == ' ' {
+								ed.pos++
+							}
+							for ed.pos < len(ed.buf) && ed.buf[ed.pos] != ' ' {
+								ed.pos++
+							}
+						case "1;2": // Shift+Left or similar — ignore
+						}
+					// Arrow keys in numeric form (e.g. ESC[1;2D) — already handled above
+					}
 					continue
-				case 3: // in OSC — consume until BEL or ST
+				case 3: // in OSC — consume until BEL or ESC
 					if b == 0x07 || b == 0x1b {
 						escState = 0
+					}
+					continue
+				case 4: // SS3 — single char follows
+					escState = 0
+					switch b {
+					case 'H': // Home
+						ed.pos = 0
+					case 'F': // End
+						ed.pos = len(ed.buf)
 					}
 					continue
 				}
@@ -126,32 +216,44 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 			case b == 0x1b:
 				escState = 1
 			case b == 0x7f || b == 0x08:
-				// Backspace / DEL — remove last char from buffer
-				if len(inputBuf) > 0 {
-					inputBuf = inputBuf[:len(inputBuf)-1]
-				}
+				// Backspace / DEL
+				edBackspace()
 			case b == 0x15:
-				// Ctrl+U — kill line (clear entire input buffer)
-				inputBuf = inputBuf[:0]
+				// Ctrl+U — kill entire line
+				edClear()
 			case b == 0x17:
-				// Ctrl+W — delete last word
-				s := strings.TrimRight(string(inputBuf), " ")
-				if idx := strings.LastIndex(s, " "); idx >= 0 {
-					inputBuf = []byte(s[:idx+1])
-				} else {
-					inputBuf = inputBuf[:0]
+				// Ctrl+W — delete word before cursor
+				edDeleteWord()
+			case b == 0x0b:
+				// Ctrl+K — kill to end of line
+				edKillToEnd()
+			case b == 0x01:
+				// Ctrl+A — go to beginning
+				ed.pos = 0
+			case b == 0x05:
+				// Ctrl+E — go to end
+				ed.pos = len(ed.buf)
+			case b == 0x02:
+				// Ctrl+B — back one char
+				if ed.pos > 0 {
+					ed.pos--
+				}
+			case b == 0x06:
+				// Ctrl+F — forward one char
+				if ed.pos < len(ed.buf) {
+					ed.pos++
 				}
 			case b == 0x03 || b == 0x04:
-				// Ctrl+C / Ctrl+D — discard current input (interrupted command)
-				inputBuf = inputBuf[:0]
+				// Ctrl+C / Ctrl+D — discard current input
+				edClear()
 			case b == '\r' || b == '\n':
-				cmd := strings.TrimSpace(string(inputBuf))
-				inputBuf = inputBuf[:0]
+				cmd := strings.TrimSpace(string(ed.buf))
+				edClear()
 				if cmd != "" {
 					boundaries = append(boundaries, boundary{cmd: cmd, ts: ev.Timestamp})
 				}
 			case b >= 0x20 && b <= 0x7e:
-				inputBuf = append(inputBuf, b)
+				edInsert(b)
 			}
 		}
 	}
