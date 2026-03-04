@@ -408,15 +408,33 @@ func (m Model) renderDetailPane(w, h int) string {
 	idx := m.list.Index() + 1
 	top := fmt.Sprintf("[%d/%d]  %s — %s", idx, len(m.findings), f.Severity.String(), f.Title)
 
+	// Build CVE/CWE/CVSS line — only show populated fields.
+	var vulnParts []string
+	if f.CWE != "" {
+		vulnParts = append(vulnParts, S.DetailLabel.Render("CWE:")+" "+S.DetailValue.Render(f.CWE))
+	}
+	if f.CVE != "" {
+		vulnParts = append(vulnParts, S.DetailLabel.Render("CVE:")+" "+S.DetailValue.Render(f.CVE))
+	}
+	if f.CVSSScore > 0 {
+		score := fmt.Sprintf("%.1f", f.CVSSScore)
+		if f.CVSSVector != "" {
+			score += "  " + f.CVSSVector
+		}
+		vulnParts = append(vulnParts, S.DetailLabel.Render("CVSS:")+" "+S.DetailValue.Render(score))
+	}
+
 	lines := []string{
 		S.PaneTitle.Render(top),
 		"",
 		S.DetailLabel.Render("Asset:") + "      " + S.DetailValue.Render(f.Asset),
 		S.DetailLabel.Render("Technique:") + "  " + S.DetailValue.Render(f.Technique),
 		S.DetailLabel.Render("Phase:") + "      " + S.DetailValue.Render(string(f.Phase)),
-		"",
-		S.DetailLabel.Render("Narrative:"),
 	}
+	if len(vulnParts) > 0 {
+		lines = append(lines, strings.Join(vulnParts, "   "))
+	}
+	lines = append(lines, "", S.DetailLabel.Render("Narrative:"))
 
 	var narrative string
 	if m.editing {
@@ -515,7 +533,7 @@ func (m *Model) refreshEvidence() {
 		m.evidence.SetContent(err.Error())
 		return
 	}
-	m.evidence.SetContent(strings.Join(lines, "\n"))
+	m.evidence.SetContent(strings.Join(lines, "\n\n"))
 }
 
 func (m *Model) startEditing() {

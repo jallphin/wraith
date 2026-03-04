@@ -168,6 +168,7 @@ func (db *DB) LoadEventTexts(ids []int64) ([]string, error) {
 		return nil, nil
 	}
 
+	seen := map[string]struct{}{} // deduplicate identical evidence blocks
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		var kind string
@@ -177,12 +178,28 @@ func (db *DB) LoadEventTexts(ids []int64) ([]string, error) {
 		if err := db.conn.QueryRow(`SELECT kind, ts, data, note FROM events WHERE id=?`, id).Scan(&kind, &tsMS, &data, &note); err != nil {
 			continue
 		}
-		ts := time.UnixMilli(tsMS).UTC().Format(time.RFC3339)
-		text := string(data)
+
+		var text string
 		if note.Valid {
-			text = note.String
+			text = strings.TrimSpace(note.String)
+		} else {
+			text = strings.TrimSpace(string(data))
 		}
-		out = append(out, fmt.Sprintf("[%s] %s: %s", ts, kind, text))
+
+		// Skip empty or placeholder-only entries.
+		if text == "" || text == "$ [operator note]" || text == "[operator note]" {
+			continue
+		}
+
+		// Deduplicate: skip if we've already included this exact content.
+		if _, dup := seen[text]; dup {
+			continue
+		}
+		seen[text] = struct{}{}
+
+		ts := time.UnixMilli(tsMS).UTC().Format("2006-01-02 15:04:05 UTC")
+
+		out = append(out, fmt.Sprintf("[%s]\n%s", ts, text))
 	}
 	return out, nil
 }
