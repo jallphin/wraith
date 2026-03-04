@@ -208,3 +208,43 @@ func (db *DB) SaveCommandPairNote(ts time.Time, command, output string) (int64, 
 	}
 	return result.LastInsertId()
 }
+
+// SaveCommandPairNotesBatch saves multiple command pair notes in a single transaction.
+// Returns a slice of row IDs in the same order as inputs; 0 for any that failed.
+func (db *DB) SaveCommandPairNotesBatch(commands []string, outputs []string, timestamps []time.Time) ([]int64, error) {
+	if len(commands) == 0 {
+		return nil, nil
+	}
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO events (kind, ts, data, note) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	defer stmt.Close()
+
+	ids := make([]int64, len(commands))
+	for i := range commands {
+		var text string
+		if outputs[i] != "" {
+			text = "$ " + commands[i] + "\n\n" + outputs[i]
+		} else {
+			text = "$ " + commands[i]
+		}
+		ts := timestamps[i]
+		result, err := stmt.Exec("note", ts.UnixMilli(), nil, text)
+		if err != nil {
+			ids[i] = 0
+		} else {
+			id, _ := result.LastInsertId()
+			ids[i] = id
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}

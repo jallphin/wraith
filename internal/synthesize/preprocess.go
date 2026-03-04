@@ -149,22 +149,27 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 
 	findNotFoundCmd := regexp.MustCompile(`(?m)Command '([^']+)' not found`)
 
+	// Build output per command in one linear pass: advance a single pointer
+	// through outputChunks as we iterate boundaries (both are sorted by ts).
 	var pairs []CommandPair
+	outIdx := 0 // index into outputChunks; only advances forward
 	for i, b := range boundaries {
 		var endTs time.Time
 		if i+1 < len(boundaries) {
 			endTs = boundaries[i+1].ts
 		}
 
+		// Skip output chunks that are before this command's timestamp.
+		for outIdx < len(outputChunks) && outputChunks[outIdx].ts.Before(b.ts) {
+			outIdx++
+		}
+
 		var sb strings.Builder
-		for _, oc := range outputChunks {
-			if oc.ts.Before(b.ts) {
-				continue
-			}
-			if !endTs.IsZero() && !oc.ts.Before(endTs) {
+		for j := outIdx; j < len(outputChunks); j++ {
+			if !endTs.IsZero() && !outputChunks[j].ts.Before(endTs) {
 				break
 			}
-			sb.WriteString(oc.text)
+			sb.WriteString(outputChunks[j].text)
 		}
 
 		output := TruncateOutput(sb.String(), defaultMaxOutputLines)

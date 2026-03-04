@@ -51,15 +51,19 @@ func RunWithProgress(db *store.DB, cfg config.Config, progress ProgressFunc) ([]
 		return nil, nil
 	}
 
-	// Save each command pair as a note event; collect row IDs for evidence linking.
-	pairRowIDs := make([]int64, len(pairs))
+	// Batch-save all command pairs as note events in a single transaction.
+	cmds := make([]string, len(pairs))
+	outs := make([]string, len(pairs))
+	tss := make([]time.Time, len(pairs))
 	for i, p := range pairs {
-		rowID, err := db.SaveCommandPairNote(p.Timestamp, p.Command, p.Output)
-		if err != nil {
-			pairRowIDs[i] = 0
-		} else {
-			pairRowIDs[i] = rowID
-		}
+		cmds[i] = p.Command
+		outs[i] = p.Output
+		tss[i] = p.Timestamp
+	}
+	pairRowIDs, err := db.SaveCommandPairNotesBatch(cmds, outs, tss)
+	if err != nil {
+		// Non-fatal: fall back to empty IDs, evidence linking degrades gracefully.
+		pairRowIDs = make([]int64, len(pairs))
 	}
 
 	report(StageClusters, fmt.Sprintf("Clustering %d command pairs into phases", len(pairs)))
