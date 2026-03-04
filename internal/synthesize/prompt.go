@@ -48,9 +48,9 @@ Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that d
 	}
 	b.WriteString(fmt.Sprintf("Session ID: %s\n", sessionID))
 
-	// Hard budget: ~140k chars ≈ 35k tokens, well under 200k token limit.
-	// Reserve ~2k chars for the header/schema above.
-	const maxBodyChars = 140_000
+	// Hard budget: ~100k chars ≈ 25k tokens — fits within OpenAI Codex OAuth TPM limits.
+	// Anthropic handles larger; this conservative limit works for both providers.
+	const maxBodyChars = 100_000
 	bodyStart := b.Len()
 
 	for _, phase := range phases {
@@ -73,8 +73,8 @@ Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that d
 				b.WriteString("\n[... session truncated: prompt budget exceeded ...]\n")
 				goto done
 			}
-			// Cap each command output hard at 20 lines to stay lean.
-			out := truncateLines(pair.Output, 20)
+			// Cap each command output hard at 15 lines to stay lean.
+			out := truncateLines(pair.Output, 15)
 			b.WriteString(fmt.Sprintf("[cmd:%d] $ %s\n", pair.Index, pair.Command))
 			if out != "" {
 				b.WriteString(out)

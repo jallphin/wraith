@@ -34,6 +34,7 @@ var stageLabels = map[synthStage]string{
 
 type synthProgressMsg struct {
 	stage synthStage
+	label string // overrides stageLabels when non-empty
 }
 
 type synthDoneMsg struct {
@@ -42,37 +43,42 @@ type synthDoneMsg struct {
 }
 
 type spinnerModel struct {
-	spinner  spinner.Model
-	stage    synthStage
-	quitting bool
-	err      error
-	findings []store.Finding
-	db       *store.DB
-	cfg      config.Config
+	spinner    spinner.Model
+	stage      synthStage
+	stageLabel string
+	quitting   bool
+	err        error
+	findings   []store.Finding
+	db         *store.DB
+	cfg        config.Config
 }
 
 func newSpinnerModel(db *store.DB, cfg config.Config) spinnerModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	return spinnerModel{spinner: s, db: db, cfg: cfg, stage: stageAI}
+	return spinnerModel{
+		spinner:    s,
+		db:         db,
+		cfg:        cfg,
+		stage:      stageEvents,
+		stageLabel: stageLabels[stageEvents],
+	}
 }
 
 func (m spinnerModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, runSynthesis(m.db, m.cfg))
-}
-
-func runSynthesis(db *store.DB, cfg config.Config) tea.Cmd {
-	return func() tea.Msg {
-		findings, err := synthesize.Run(db, cfg)
-		return synthDoneMsg{findings: findings, err: err}
-	}
+	return m.spinner.Tick
 }
 
 func (m spinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case synthProgressMsg:
 		m.stage = msg.stage
+		if msg.label != "" {
+			m.stageLabel = msg.label
+		} else {
+			m.stageLabel = stageLabels[msg.stage]
+		}
 		return m, nil
 	case synthDoneMsg:
 		m.quitting = true
@@ -91,8 +97,7 @@ func (m spinnerModel) View() string {
 	if m.quitting {
 		return ""
 	}
-	label := stageLabels[m.stage]
-	return fmt.Sprintf("\n  %s %s...\n\n", m.spinner.View(), label)
+	return fmt.Sprintf("\n  %s %s...\n\n", m.spinner.View(), m.stageLabel)
 }
 
 // RunSynthesisWithSpinner runs AI synthesis with a progress spinner.
@@ -100,6 +105,30 @@ func (m spinnerModel) View() string {
 func RunSynthesisWithSpinner(db *store.DB, cfg config.Config) ([]store.Finding, error) {
 	m := newSpinnerModel(db, cfg)
 	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
+
+	// Run synthesis in background; send progress + done msgs to the program.
+	go func() {
+		findings, err := synthesize.RunWithProgress(db, cfg, func(stage synthesize.Stage, label string) {
+			var ts synthStage
+			switch stage {
+			case synthesize.StageEvents:
+				ts = stageEvents
+			case synthesize.StagePairs:
+				ts = stagePairs
+			case synthesize.StageClusters:
+				ts = stageClusters
+			case synthesize.StagePrompt:
+				ts = stageClusters
+			case synthesize.StageAI:
+				ts = stageAI
+			case synthesize.StageSave:
+				ts = stageSave
+			}
+			p.Send(synthProgressMsg{stage: ts, label: label})
+		})
+		p.Send(synthDoneMsg{findings: findings, err: err})
+	}()
+
 	result, err := p.Run()
 	if err != nil {
 		return nil, err
