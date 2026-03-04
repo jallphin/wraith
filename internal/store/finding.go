@@ -90,6 +90,12 @@ type Finding struct {
 	Technique string
 	Phase     Phase
 	Narrative string
+	CVE       string
+	CVSSScore float64
+	CVSSVector string
+	CWE       string
+	CPE       string
+	Tags      []string
 	EventIDs  []int64
 	Status    FindingStatus
 	CreatedAt time.Time
@@ -125,9 +131,14 @@ func (db *DB) SaveFinding(f Finding) error {
 		return err
 	}
 
+	tagsJSON, err := json.Marshal(f.Tags)
+	if err != nil {
+		return err
+	}
+
 	_, err = db.conn.Exec(
-		`INSERT INTO findings (id, session_id, title, severity, asset, technique, phase, narrative, event_ids, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO findings (id, session_id, title, severity, asset, technique, phase, narrative, cve, cvss_score, cvss_vector, cwe, cpe, tags, event_ids, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.ID,
 		f.SessionID,
 		f.Title,
@@ -136,6 +147,12 @@ func (db *DB) SaveFinding(f Finding) error {
 		f.Technique,
 		string(f.Phase),
 		f.Narrative,
+		f.CVE,
+		f.CVSSScore,
+		f.CVSSVector,
+		f.CWE,
+		f.CPE,
+		string(tagsJSON),
 		string(eventIDsJSON),
 		int(f.Status),
 		f.CreatedAt.UnixMilli(),
@@ -161,9 +178,14 @@ func (db *DB) UpdateFinding(f Finding) error {
 		return err
 	}
 
+	tagsJSON, err := json.Marshal(f.Tags)
+	if err != nil {
+		return err
+	}
+
 	res, err := db.conn.Exec(
 		`UPDATE findings
-		 SET title=?, severity=?, asset=?, technique=?, phase=?, narrative=?, event_ids=?, status=?, updated_at=?
+		 SET title=?, severity=?, asset=?, technique=?, phase=?, narrative=?, cve=?, cvss_score=?, cvss_vector=?, cwe=?, cpe=?, tags=?, event_ids=?, status=?, updated_at=?
 		 WHERE id=?`,
 		f.Title,
 		int(f.Severity),
@@ -171,6 +193,12 @@ func (db *DB) UpdateFinding(f Finding) error {
 		f.Technique,
 		string(f.Phase),
 		f.Narrative,
+		f.CVE,
+		f.CVSSScore,
+		f.CVSSVector,
+		f.CWE,
+		f.CPE,
+		string(tagsJSON),
 		string(eventIDsJSON),
 		int(f.Status),
 		f.UpdatedAt.UnixMilli(),
@@ -194,7 +222,7 @@ func (db *DB) LoadFindings(sessionID string) ([]Finding, error) {
 	}
 
 	rows, err := db.conn.Query(
-		`SELECT id, session_id, title, severity, asset, technique, phase, narrative, event_ids, status, created_at, updated_at
+		`SELECT id, session_id, title, severity, asset, technique, phase, narrative, cve, cvss_score, cvss_vector, cwe, cpe, tags, event_ids, status, created_at, updated_at
 		 FROM findings
 		 WHERE session_id=?
 		 ORDER BY created_at ASC`,
@@ -211,6 +239,12 @@ func (db *DB) LoadFindings(sessionID string) ([]Finding, error) {
 		var sev int
 		var status int
 		var phase string
+		var cve string
+		var cvssScore sql.NullFloat64
+		var cvssVector string
+		var cwe string
+		var cpe string
+		var tagsStr string
 		var eventIDsStr string
 		var createdMS, updatedMS int64
 		if err := rows.Scan(
@@ -222,6 +256,12 @@ func (db *DB) LoadFindings(sessionID string) ([]Finding, error) {
 			&f.Technique,
 			&phase,
 			&f.Narrative,
+			&cve,
+			&cvssScore,
+			&cvssVector,
+			&cwe,
+			&cpe,
+			&tagsStr,
 			&eventIDsStr,
 			&status,
 			&createdMS,
@@ -232,6 +272,16 @@ func (db *DB) LoadFindings(sessionID string) ([]Finding, error) {
 		f.Severity = Severity(sev)
 		f.Status = FindingStatus(status)
 		f.Phase = Phase(phase)
+		f.CVE = cve
+		if cvssScore.Valid {
+			f.CVSSScore = cvssScore.Float64
+		}
+		f.CVSSVector = cvssVector
+		f.CWE = cwe
+		f.CPE = cpe
+		if tagsStr != "" {
+			_ = json.Unmarshal([]byte(tagsStr), &f.Tags)
+		}
 		if eventIDsStr != "" {
 			_ = json.Unmarshal([]byte(eventIDsStr), &f.EventIDs)
 		}

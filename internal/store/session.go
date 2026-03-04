@@ -33,18 +33,24 @@ func OpenSession(path string) (*DB, error) {
 	// Ensure findings table exists (older sessions might not have it yet).
 	_, _ = conn.Exec(`
 		CREATE TABLE IF NOT EXISTS findings (
-			id         TEXT    PRIMARY KEY,
-			session_id TEXT    NOT NULL,
-			title      TEXT    NOT NULL,
-			severity   INTEGER NOT NULL,
-			asset      TEXT,
-			technique  TEXT,
-			phase      TEXT,
-			narrative  TEXT,
-			event_ids  TEXT,
-			status     INTEGER NOT NULL DEFAULT 0,
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL
+		id          TEXT    PRIMARY KEY,
+		session_id  TEXT    NOT NULL,
+		title       TEXT    NOT NULL,
+		severity    INTEGER NOT NULL,
+		asset       TEXT,
+		technique   TEXT,
+		phase       TEXT,
+		narrative   TEXT,
+		cve         TEXT,
+		cvss_score  REAL,
+		cvss_vector TEXT,
+		cwe         TEXT,
+		cpe         TEXT,
+		tags        TEXT,
+		event_ids   TEXT,
+		status      INTEGER NOT NULL DEFAULT 0,
+		created_at  INTEGER NOT NULL,
+		updated_at  INTEGER NOT NULL
 		);
 	`)
 
@@ -54,6 +60,11 @@ func OpenSession(path string) (*DB, error) {
 	_ = conn.QueryRow(`SELECT value FROM meta WHERE key='session_id'`).Scan(&metaID)
 	if metaID != "" {
 		sessionID = metaID
+	}
+
+	if err := ensureFindingColumns(conn); err != nil {
+		conn.Close()
+		return nil, err
 	}
 
 	return &DB{conn: conn, SessionID: sessionID}, nil
