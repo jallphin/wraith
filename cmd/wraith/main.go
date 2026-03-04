@@ -91,13 +91,13 @@ func main() {
 		}
 	}
 
-	if err := cmdCapture(sessionDir, args); err != nil {
+	if err := cmdCapture(sessionDir, args, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "wraith: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func cmdCapture(sessionDir string, shellArgs []string) error {
+func cmdCapture(sessionDir string, shellArgs []string, cfg config.Config) error {
 	db, sessionID, err := store.NewSession(sessionDir)
 	if err != nil {
 		return fmt.Errorf("cannot initialize store: %w", err)
