@@ -50,6 +50,12 @@ func main() {
 	args := os.Args[1:]
 	if len(args) > 0 {
 		switch args[0] {
+		case "version", "--version", "-v":
+			fmt.Printf("wraith v%s (%s)\n", Version, GitCommit)
+			return
+		case "help", "--help", "-h":
+			printHelp()
+			return
 		case "list":
 			if err := cmdList(sessionDir); err != nil {
 				fmt.Fprintf(os.Stderr, "wraith list: %v\n", err)
@@ -83,6 +89,16 @@ func main() {
 			}
 			if err := cmdResyn(sessionDir, id, cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "wraith resyn: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "export":
+			id := ""
+			if len(args) > 1 {
+				id = args[1]
+			}
+			if err := cmdExport(sessionDir, id, cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "wraith export: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -227,8 +243,62 @@ func cmdNote(sessionDir, text string, cfg config.Config) error {
 	return nil
 }
 
+func cmdExport(sessionDir, id string, cfg config.Config) error {
+	meta, err := store.FindSession(sessionDir, id)
+	if err != nil {
+		return err
+	}
+	db, err := store.OpenSession(meta.Path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	findings, err := db.LoadFindings(db.SessionID)
+	if err != nil {
+		return err
+	}
+	jsonPath, mdPath, err := tui.ExportApproved(db, meta, findings, cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("[wraith] exported → %s\n", jsonPath)
+	fmt.Printf("[wraith] exported → %s\n", mdPath)
+	return nil
+}
+
+func printHelp() {
+	help := fmt.Sprintf(`wraith v%s (%s) — red team session intelligence
+
+USAGE
+  wraith                          start a captured session (wraps your shell)
+  wraith review [id]              review + approve findings for a session
+  wraith resyn [id]               re-run AI synthesis, replacing existing findings
+  wraith export [id]              export approved findings to JSON + Markdown
+  wraith note <text>              annotate the active session
+  wraith list                     list all sessions
+  wraith version                  show version
+  wraith help                     show this help
+
+  [id] is optional — defaults to the most recent session.
+  Partial IDs are accepted (first 8 chars is enough).
+
+CONFIG
+  ~/.wraith/config.toml           engagement, operator, and AI settings
+
+SESSIONS
+  ~/.wraith/sessions/*.db         SQLite session databases
+
+EXPORTS
+  ~/.wraith/exports/<id>/         report.json + report.md
+
+BUILD
+  go build -ldflags "-X main.GitCommit=$(git rev-parse --short HEAD)" ./cmd/wraith/
+`, Version, GitCommit)
+	fmt.Print(help)
+}
+
 func printBanner() {
 	fmt.Fprintln(os.Stderr, bannerStyle.Render(bannerArt))
-	fmt.Fprintln(os.Stderr, taglineStyle.Render(fmt.Sprintf("  red team session intelligence  v%s", Version)))
+	fmt.Fprintln(os.Stderr, taglineStyle.Render(fmt.Sprintf("  red team session intelligence  v%s (%s)", Version, GitCommit)))
 	fmt.Fprintln(os.Stderr)
 }
