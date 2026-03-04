@@ -199,7 +199,9 @@ func (db *DB) LoadEventTexts(ids []int64) ([]string, error) {
 
 		ts := time.UnixMilli(tsMS).UTC().Format("2006-01-02 15:04:05 UTC")
 
-		out = append(out, fmt.Sprintf("[%s]\n%s", ts, text))
+		// Clean up the text: truncate runaway syslog/audit lines (key=value chains).
+		cleaned := cleanEvidenceText(text)
+		out = append(out, fmt.Sprintf("[%s]\n%s", ts, cleaned))
 	}
 	return out, nil
 }
@@ -264,4 +266,18 @@ func (db *DB) SaveCommandPairNotesBatch(commands []string, outputs []string, tim
 		return nil, err
 	}
 	return ids, nil
+}
+
+// cleanEvidenceText sanitizes raw evidence text for display.
+// Truncates runaway syslog/audit key=value lines that would overflow the terminal.
+func cleanEvidenceText(text string) string {
+	const maxLineLen = 200
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		// Detect structured log lines: >3 key=value pairs in a row → truncate.
+		if strings.Count(line, "=") >= 4 && len(line) > maxLineLen {
+			lines[i] = line[:maxLineLen] + " [...]"
+		}
+	}
+	return strings.Join(lines, "\n")
 }

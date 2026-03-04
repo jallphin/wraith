@@ -15,6 +15,68 @@ import (
 	"github.com/jallphin/wraith/internal/store"
 )
 
+// cweNames maps common CWE IDs to short descriptive titles.
+// Covers the most frequent findings in red team/pentest work.
+var cweNames = map[string]string{
+	"CWE-20":  "Improper Input Validation",
+	"CWE-22":  "Path Traversal",
+	"CWE-78":  "OS Command Injection",
+	"CWE-79":  "Cross-site Scripting",
+	"CWE-89":  "SQL Injection",
+	"CWE-94":  "Code Injection",
+	"CWE-119": "Buffer Overflow",
+	"CWE-200": "Exposure of Sensitive Information",
+	"CWE-250": "Execution with Unnecessary Privileges",
+	"CWE-255": "Credentials Management Errors",
+	"CWE-269": "Improper Privilege Management",
+	"CWE-276": "Incorrect Default Permissions",
+	"CWE-284": "Improper Access Control",
+	"CWE-285": "Improper Authorization",
+	"CWE-287": "Improper Authentication",
+	"CWE-306": "Missing Authentication for Critical Function",
+	"CWE-311": "Missing Encryption of Sensitive Data",
+	"CWE-319": "Cleartext Transmission of Sensitive Information",
+	"CWE-320": "Key Management Errors",
+	"CWE-321": "Use of Hard-coded Cryptographic Key",
+	"CWE-322": "Key Exchange without Entity Authentication",
+	"CWE-326": "Inadequate Encryption Strength",
+	"CWE-327": "Use of Broken/Risky Cryptographic Algorithm",
+	"CWE-328": "Use of Weak Hash",
+	"CWE-330": "Use of Insufficiently Random Values",
+	"CWE-362": "Race Condition",
+	"CWE-377": "Insecure Temporary File",
+	"CWE-400": "Uncontrolled Resource Consumption",
+	"CWE-416": "Use After Free",
+	"CWE-434": "Unrestricted File Upload",
+	"CWE-521": "Weak Password Requirements",
+	"CWE-522": "Insufficiently Protected Credentials",
+	"CWE-523": "Unprotected Transport of Credentials",
+	"CWE-552": "Files Accessible to External Parties",
+	"CWE-601": "Open Redirect",
+	"CWE-611": "XML External Entity",
+	"CWE-613": "Insufficient Session Expiration",
+	"CWE-639": "Insecure Direct Object Reference",
+	"CWE-732": "Incorrect Permission Assignment",
+	"CWE-787": "Out-of-bounds Write",
+	"CWE-798": "Use of Hard-coded Credentials",
+	"CWE-862": "Missing Authorization",
+	"CWE-863": "Incorrect Authorization",
+	"CWE-918": "Server-Side Request Forgery",
+}
+
+// cweLabel returns "CWE-NNN: Title" if the title is known, else just "CWE-NNN".
+func cweLabel(cwe string) string {
+	if cwe == "" {
+		return ""
+	}
+	// Normalize: uppercase, trim whitespace.
+	id := strings.ToUpper(strings.TrimSpace(cwe))
+	if name, ok := cweNames[id]; ok {
+		return id + ": " + name
+	}
+	return id
+}
+
 type pane int
 
 const (
@@ -314,7 +376,7 @@ func (m *Model) resize() {
 		rightW = 20
 	}
 
-	m.list.SetSize(leftW-2, bodyH-2) // inside border
+	m.list.SetSize(leftW-2, bodyH-3) // inside border, minus 1 for FINDINGS title row
 	m.narrative.Width = rightW - 2
 	m.narrative.Height = bodyH - 8
 	if m.narrative.Height < 3 {
@@ -411,7 +473,7 @@ func (m Model) renderDetailPane(w, h int) string {
 	// Build CVE/CWE/CVSS line — only show populated fields.
 	var vulnParts []string
 	if f.CWE != "" {
-		vulnParts = append(vulnParts, S.DetailLabel.Render("CWE:")+" "+S.DetailValue.Render(f.CWE))
+		vulnParts = append(vulnParts, S.DetailLabel.Render("CWE:")+" "+S.DetailValue.Render(cweLabel(f.CWE)))
 	}
 	if f.CVE != "" {
 		vulnParts = append(vulnParts, S.DetailLabel.Render("CVE:")+" "+S.DetailValue.Render(f.CVE))
@@ -533,7 +595,14 @@ func (m *Model) refreshEvidence() {
 		m.evidence.SetContent(err.Error())
 		return
 	}
-	m.evidence.SetContent(strings.Join(lines, "\n\n"))
+	w := m.evidence.Width
+	if w <= 0 {
+		w = 80
+	}
+	content := strings.Join(lines, "\n\n")
+	// Wrap long lines to viewport width so they don't overflow horizontally.
+	wrapped := lipgloss.NewStyle().Width(w).Render(content)
+	m.evidence.SetContent(wrapped)
 }
 
 func (m *Model) startEditing() {

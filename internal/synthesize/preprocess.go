@@ -359,56 +359,57 @@ func summarizeNmap(output string) (string, bool) {
 		return "", false
 	}
 
-	hosts := []string{}
-	ports := []string{}
-	seenHosts := map[string]struct{}{}
-	seenPorts := map[string]struct{}{}
-
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Nmap scan report for ") {
-			host := strings.TrimPrefix(line, "Nmap scan report for ")
-			if host != "" {
-				if _, ok := seenHosts[host]; !ok {
-					seenHosts[host] = struct{}{}
-					hosts = append(hosts, host)
-				}
-			}
-		}
-		if strings.Contains(line, "/tcp") || strings.Contains(line, "/udp") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				state := strings.ToLower(parts[1])
-				// Only keep open (or open|filtered for UDP) — skip closed/filtered noise
-				if state == "open" || state == "open|filtered" {
-					port := parts[0]
-					if _, ok := seenPorts[port]; !ok {
-						seenPorts[port] = struct{}{}
-						ports = append(ports, port)
-					}
-				}
-			}
-		}
-	}
-
-	if len(hosts) == 0 && len(ports) == 0 {
-		return "", false
+	// Keep informative lines, drop pure noise.
+	// Noise: blank lines inside stats blocks, progress indicators, raw packet counts.
+	noisePatterns := []string{
+		"raw packets sent",
+		"read data files from",
+		"nmap done:",
+		"warning:",
+		"note:",
+		"initiating",
+		"completed",
+		"stats:",
+		"seconds elapsed",
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Nmap scan summary:\n")
-	if len(hosts) > 0 {
-		sb.WriteString("Hosts: ")
-		sb.WriteString(strings.Join(hosts, ", "))
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimRight(line, " \t")
+		lower := strings.ToLower(trimmed)
+
+		// Always skip pure noise lines.
+		skip := false
+		for _, pat := range noisePatterns {
+			if strings.Contains(lower, pat) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+
+		// For port lines, skip closed/filtered — keep open and open|filtered.
+		if strings.Contains(trimmed, "/tcp") || strings.Contains(trimmed, "/udp") {
+			parts := strings.Fields(trimmed)
+			if len(parts) >= 2 {
+				state := strings.ToLower(parts[1])
+				if state != "open" && state != "open|filtered" {
+					continue
+				}
+			}
+		}
+
+		sb.WriteString(trimmed)
 		sb.WriteByte('\n')
 	}
-	if len(ports) > 0 {
-		sb.WriteString("Ports: ")
-		sb.WriteString(strings.Join(ports, ", "))
-		sb.WriteByte('\n')
+
+	result := strings.TrimSpace(sb.String())
+	if result == "" {
+		return "", false
 	}
-	summary := strings.TrimRight(sb.String(), "\n")
-	return summary, true
+	return result, true
 }
 
 func extractTargets(source string) []string {
