@@ -436,13 +436,36 @@ func (m Model) renderHeader() string {
 		}
 	}
 	meta := fmt.Sprintf("wraith review • session %s • %s • %d events • %d/%d approved", id, m.sessionMeta.Duration.Truncate(timeSecond).String(), m.sessionMeta.EventCount, approved, len(m.findings))
-	if len(meta) > m.width-2 {
-		meta = meta[:m.width-5] + "..."
+	// Clamp to available width before rendering to prevent wrapping onto a second line,
+	// which would push the status bar off-screen.
+	maxContent := m.width - 2 // account for padding(0,1) = 2 cols
+	if maxContent < 10 {
+		maxContent = 10
+	}
+	if len(meta) > maxContent {
+		meta = meta[:maxContent-3] + "..."
 	}
 	return S.Header.Width(m.width).Render(meta)
 }
 
 const timeSecond = 1_000_000_000
+
+// clampLines truncates or pads a rendered string to exactly n lines.
+// This ensures pane content never overflows the border height.
+func clampLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	// Pad with empty lines so lipgloss Height() doesn't need to expand.
+	for len(lines) < n {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
 
 func (m Model) renderBody() string {
 	headerH := 1
@@ -460,13 +483,20 @@ func (m Model) renderBody() string {
 	rightW := m.width - leftW
 
 	innerH := bodyH - 2 // border adds 2 rows; set inner height so outer = bodyH
-	left := S.PaneBorder.Width(leftW).Height(innerH).Render(m.renderListPane(leftW-2, innerH))
-	var right string
+
+	// Clamp pane content to exactly innerH lines before rendering into the border.
+	// lipgloss Height() is a minimum, not a maximum — without clamping, overflowing
+	// content pushes the border taller and misaligns the two panes.
+	leftContent := clampLines(m.renderListPane(leftW-2, innerH), innerH)
+	left := S.PaneBorder.Width(leftW).Height(innerH).Render(leftContent)
+
+	var rightContent string
 	if m.showEvidence {
-		right = S.PaneBorder.Width(rightW).Height(innerH).Render(m.renderEvidencePane(rightW-2, innerH))
+		rightContent = clampLines(m.renderEvidencePane(rightW-2, innerH), innerH)
 	} else {
-		right = S.PaneBorder.Width(rightW).Height(innerH).Render(m.renderDetailPane(rightW-2, innerH))
+		rightContent = clampLines(m.renderDetailPane(rightW-2, innerH), innerH)
 	}
+	right := S.PaneBorder.Width(rightW).Height(innerH).Render(rightContent)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
