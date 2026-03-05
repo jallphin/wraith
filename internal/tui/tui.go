@@ -134,7 +134,8 @@ func (d findingDelegate) Render(w io.Writer, m list.Model, index int, item list.
 
 	// Dynamically size title/asset based on available list width.
 	// Visible overhead: 1 (icon) + 1 (space) + 4 (sev) + 2 (spaces) = 8
-	avail := m.Width() - 8
+	// FindingRow style has Padding(0,1) = 2 extra cols; subtract those too.
+	avail := m.Width() - 8 - 2
 	if avail < 20 {
 		avail = 20
 	}
