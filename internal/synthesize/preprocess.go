@@ -195,10 +195,17 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 					// Arrow keys in numeric form (e.g. ESC[1;2D) — already handled above
 					}
 					continue
-				case 3: // in OSC — consume until BEL or ESC
-					if b == 0x07 || b == 0x1b {
+				case 3: // in OSC — consume until BEL (0x07) or ST (ESC \, i.e. ESC followed by \)
+					// Konsole shell integration uses ESC \ (ST) as terminator, not BEL.
+					// When we see ESC, transition to state 5 to consume the trailing \.
+					if b == 0x07 {
 						escState = 0
+					} else if b == 0x1b {
+						escState = 5 // expect \ to complete ST
 					}
+					continue
+				case 5: // ST second byte: expect \ to complete ESC \ terminator
+					escState = 0 // consume it unconditionally (whether \ or not)
 					continue
 				case 4: // SS3 — single char follows
 					escState = 0
