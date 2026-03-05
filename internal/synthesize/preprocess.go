@@ -29,6 +29,14 @@ type CommandPair struct {
 	Output    string
 	Timestamp time.Time
 	Targets   []string
+	TUIMode   bool   // true if this command launched a full-screen TUI (vim, nano, etc.)
+	TUILabel  string // name of the TUI process, e.g. "nano"
+}
+
+// tuiWindow records a period when the terminal was in alternate-screen mode.
+type tuiWindow struct {
+	start time.Time
+	end   time.Time // zero if still active at session end
 }
 
 func LoadEvents(db *store.DB) ([]store.Event, error) {
@@ -127,146 +135,260 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 
 	var boundaries []boundary
 
-	// escState tracks position in an escape sequence.
-	// We accumulate CSI parameter bytes to identify the specific sequence.
-	escState := 0
-	var csiParam []byte // accumulate CSI parameter bytes (digits + semicolons)
+	// Escape state machine v2 — strict-discard consumer.
+	//
+	// KEY INVARIANT: No byte inside any escape sequence ever reaches edInsert().
+	// Unknown sequences are fully consumed and silently discarded.
+	// This prevents terminal weirdness (OSC shell integration, bracketed paste,
+	// application-specific sequences) from corrupting command reconstruction.
+	//
+	// States:
+	//   escNone  — normal input processing
+	//   escEsc   — saw ESC (0x1B), deciding sequence type
+	//   escCSI   — in CSI (ESC [), accumulating params until final byte
+	//   escOSC   — in OSC (ESC ]) or DCS/APC/PM/SOS, consuming until BEL or ST
+	//   escSS3   — in SS3 (ESC O), consuming one byte
+	//   escST    — saw ESC inside a string sequence, expecting \ to complete ST
+	//   escFe    — single-byte Fe sequence (ESC @–_), consuming one byte
+	type escMode int
+	const (
+		escNone escMode = iota
+		escEsc
+		escCSI
+		escOSC // also used for DCS, APC, PM, SOS — all terminate with ST or BEL
+		escSS3
+		escST
+		escFe
+	)
+
+	esc := escNone
+	var csiParam []byte
 
 	for _, ev := range events {
 		if ev.Kind != store.EventInput {
 			continue
 		}
 		for _, b := range ev.Data {
-			if escState != 0 {
-				switch escState {
-				case 1: // just saw ESC
-					switch {
-					case b == '[':
-						escState = 2 // CSI
-						csiParam = csiParam[:0]
-					case b == ']':
-						escState = 3 // OSC
-					case b == 'O':
-						escState = 4 // SS3 (function keys like F1-F4)
-					case b == 0x1b:
-						// ESC ESC — meta prefix, stay in esc state
-					default:
-						escState = 0
+			switch esc {
+			case escEsc:
+				switch {
+				case b == '[':
+					esc = escCSI
+					csiParam = csiParam[:0]
+				case b == ']':
+					esc = escOSC // OSC
+				case b == 'O':
+					esc = escSS3 // SS3
+				case b == 'P', b == '_', b == '^', b == 'X':
+					esc = escOSC // DCS, APC, PM, SOS — all same termination rule
+				case b == 0x1b:
+					// ESC ESC — Alt/Meta prefix; stay in escEsc to consume next byte
+				case b == 'b':
+					// Alt+B — word backward
+					for ed.pos > 0 && ed.buf[ed.pos-1] == ' ' {
+						ed.pos--
 					}
+					for ed.pos > 0 && ed.buf[ed.pos-1] != ' ' {
+						ed.pos--
+					}
+					esc = escNone
+				case b == 'f':
+					// Alt+F — word forward
+					for ed.pos < len(ed.buf) && ed.buf[ed.pos] == ' ' {
+						ed.pos++
+					}
+					for ed.pos < len(ed.buf) && ed.buf[ed.pos] != ' ' {
+						ed.pos++
+					}
+					esc = escNone
+				case b >= 0x40 && b <= 0x5f:
+					// Fe sequence (ESC @–_): consume one more byte
+					esc = escFe
+				default:
+					// Unknown ESC + byte — discard both, return to normal
+					esc = escNone
+				}
+
+			case escCSI:
+				if b >= 0x30 && b <= 0x3f {
+					// Parameter byte — accumulate
+					csiParam = append(csiParam, b)
 					continue
-				case 2: // in CSI — accumulate param bytes until final byte
-					if b >= 0x30 && b <= 0x3f { // param bytes: digits, ;, etc.
-						csiParam = append(csiParam, b)
-						continue
-					}
-					// Final byte — decode the sequence
-					escState = 0
-					switch b {
-					case 'D': // cursor left (arrow left)
+				}
+				if b >= 0x20 && b <= 0x2f {
+					// Intermediate byte — accumulate (rare, but spec-correct)
+					csiParam = append(csiParam, b)
+					continue
+				}
+				// Final byte (0x40–0x7E) — dispatch recognized sequences, discard rest
+				esc = escNone
+				param := string(csiParam)
+				switch b {
+				case 'D': // cursor left
+					if param == "1;5" {
+						// Ctrl+Left — word backward
+						for ed.pos > 0 && ed.buf[ed.pos-1] == ' ' {
+							ed.pos--
+						}
+						for ed.pos > 0 && ed.buf[ed.pos-1] != ' ' {
+							ed.pos--
+						}
+					} else {
 						if ed.pos > 0 {
 							ed.pos--
 						}
-					case 'C': // cursor right (arrow right)
+					}
+				case 'C': // cursor right
+					if param == "1;5" {
+						// Ctrl+Right — word forward
+						for ed.pos < len(ed.buf) && ed.buf[ed.pos] == ' ' {
+							ed.pos++
+						}
+						for ed.pos < len(ed.buf) && ed.buf[ed.pos] != ' ' {
+							ed.pos++
+						}
+					} else {
 						if ed.pos < len(ed.buf) {
 							ed.pos++
 						}
-					case 'H': // Home
-						ed.pos = 0
-					case 'F': // End
-						ed.pos = len(ed.buf)
-					case '~': // extended sequences: delete=3~, home=1~, end=4~, etc.
-						param := string(csiParam)
-						switch param {
-						case "3": // Delete key — forward delete
-							edDelete()
-						case "1", "7": // Home
-							ed.pos = 0
-						case "4", "8": // End
-							ed.pos = len(ed.buf)
-						case "1;5": // Ctrl+Right — skip word forward
-							for ed.pos < len(ed.buf) && ed.buf[ed.pos] == ' ' {
-								ed.pos++
-							}
-							for ed.pos < len(ed.buf) && ed.buf[ed.pos] != ' ' {
-								ed.pos++
-							}
-						case "1;2": // Shift+Left or similar — ignore
-						}
-					// Arrow keys in numeric form (e.g. ESC[1;2D) — already handled above
 					}
-					continue
-				case 3: // in OSC — consume until BEL (0x07) or ST (ESC \, i.e. ESC followed by \)
-					// Konsole shell integration uses ESC \ (ST) as terminator, not BEL.
-					// When we see ESC, transition to state 5 to consume the trailing \.
-					if b == 0x07 {
-						escState = 0
-					} else if b == 0x1b {
-						escState = 5 // expect \ to complete ST
-					}
-					continue
-				case 5: // ST second byte: expect \ to complete ESC \ terminator
-					escState = 0 // consume it unconditionally (whether \ or not)
-					continue
-				case 4: // SS3 — single char follows
-					escState = 0
-					switch b {
-					case 'H': // Home
+				case 'H': // Home
+					ed.pos = 0
+				case 'F': // End
+					ed.pos = len(ed.buf)
+				case '~':
+					switch param {
+					case "3": // Delete key — forward delete
+						edDelete()
+					case "1", "7": // Home variants
 						ed.pos = 0
-					case 'F': // End
+					case "4", "8": // End variants
 						ed.pos = len(ed.buf)
 					}
-					continue
+					// All other ~ params (page up/down, F-keys, etc.) — discard
 				}
-			}
+				// All unrecognized CSI final bytes — discard (already esc=escNone)
 
-			switch {
-			case b == 0x1b:
-				escState = 1
-			case b == 0x7f || b == 0x08:
-				// Backspace / DEL
-				edBackspace()
-			case b == 0x15:
-				// Ctrl+U — kill entire line
-				edClear()
-			case b == 0x17:
-				// Ctrl+W — delete word before cursor
-				edDeleteWord()
-			case b == 0x0b:
-				// Ctrl+K — kill to end of line
-				edKillToEnd()
-			case b == 0x01:
-				// Ctrl+A — go to beginning
-				ed.pos = 0
-			case b == 0x05:
-				// Ctrl+E — go to end
-				ed.pos = len(ed.buf)
-			case b == 0x02:
-				// Ctrl+B — back one char
-				if ed.pos > 0 {
-					ed.pos--
+			case escOSC:
+				// Consuming OSC/DCS/APC/PM/SOS body.
+				// Terminate on BEL (0x07) or start of ST (ESC \).
+				if b == 0x07 {
+					esc = escNone
+				} else if b == 0x1b {
+					esc = escST // saw ESC inside string — expect \ next
 				}
-			case b == 0x06:
-				// Ctrl+F — forward one char
-				if ed.pos < len(ed.buf) {
-					ed.pos++
+				// All other bytes — consume silently
+
+			case escST:
+				// Second byte of ST (ESC \). Consume unconditionally and exit.
+				esc = escNone
+
+			case escSS3:
+				// Single byte follows ESC O — dispatch cursor keys, discard rest
+				esc = escNone
+				switch b {
+				case 'A': // up — ignore (history)
+				case 'B': // down — ignore
+				case 'C': // right
+					if ed.pos < len(ed.buf) {
+						ed.pos++
+					}
+				case 'D': // left
+					if ed.pos > 0 {
+						ed.pos--
+					}
+				case 'H': // Home
+					ed.pos = 0
+				case 'F': // End
+					ed.pos = len(ed.buf)
 				}
-			case b == 0x03 || b == 0x04:
-				// Ctrl+C / Ctrl+D — discard current input
-				edClear()
-			case b == '\r' || b == '\n':
-				cmd := strings.TrimSpace(string(ed.buf))
-				edClear()
-				if cmd != "" {
-					boundaries = append(boundaries, boundary{cmd: cmd, ts: ev.Timestamp})
+				// F1–F4 (P/Q/R/S) and anything else — discard
+
+			case escFe:
+				// Single-byte Fe sequence — consume and discard
+				esc = escNone
+
+			case escNone:
+				switch {
+				case b == 0x1b:
+					esc = escEsc
+				case b == 0x7f || b == 0x08:
+					edBackspace()
+				case b == 0x15:
+					edClear()
+				case b == 0x17:
+					edDeleteWord()
+				case b == 0x0b:
+					edKillToEnd()
+				case b == 0x01:
+					ed.pos = 0
+				case b == 0x05:
+					ed.pos = len(ed.buf)
+				case b == 0x02:
+					if ed.pos > 0 {
+						ed.pos--
+					}
+				case b == 0x06:
+					if ed.pos < len(ed.buf) {
+						ed.pos++
+					}
+				case b == 0x03 || b == 0x04:
+					edClear()
+				case b == '\r' || b == '\n':
+					cmd := strings.TrimSpace(string(ed.buf))
+					edClear()
+					if cmd != "" {
+						boundaries = append(boundaries, boundary{cmd: cmd, ts: ev.Timestamp})
+					}
+				case b >= 0x20 && b <= 0x7e:
+					edInsert(b)
+				// All other control bytes (0x00–0x1F not handled above) — discard
 				}
-			case b >= 0x20 && b <= 0x7e:
-				edInsert(b)
 			}
 		}
 	}
 
 	if len(boundaries) == 0 {
 		return nil
+	}
+
+	// Detect TUI windows from the output stream.
+	// Alternate-screen entry/exit sequences mark periods when a full-screen TUI
+	// (nano, vim, htop, msfconsole with TUI, etc.) is active.
+	// During these windows we tag the launching command so the AI knows not to
+	// interpret keystroke reconstruction artifacts as shell syntax.
+	altScreenEnter := regexp.MustCompile(`\x1b\[(?:\?1049|\?1047|\?47)h`)
+	altScreenExit := regexp.MustCompile(`\x1b\[(?:\?1049|\?1047|\?47)l`)
+
+	var tuiWindows []tuiWindow
+	var tuiOpen *tuiWindow
+	for _, ev := range events {
+		if ev.Kind != store.EventOutput {
+			continue
+		}
+		raw := string(ev.Data)
+		if altScreenEnter.MatchString(raw) && tuiOpen == nil {
+			w := tuiWindow{start: ev.Timestamp}
+			tuiWindows = append(tuiWindows, w)
+			tuiOpen = &tuiWindows[len(tuiWindows)-1]
+		}
+		if altScreenExit.MatchString(raw) && tuiOpen != nil {
+			tuiOpen.end = ev.Timestamp
+			tuiOpen = nil
+		}
+	}
+
+	// Helper: check if a time falls within any TUI window.
+	inTUIWindow := func(t time.Time) bool {
+		for _, w := range tuiWindows {
+			if t.Before(w.start) {
+				continue
+			}
+			if w.end.IsZero() || t.Before(w.end) {
+				return true
+			}
+		}
+		return false
 	}
 
 	type outputChunk struct {
@@ -349,12 +471,29 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 		}
 		targets := extractTargets(targetSource)
 
+		// Check if this command launched a TUI (alternate-screen active shortly after)
+		tuiMode := inTUIWindow(b.ts)
+		tuiLabel := ""
+		if tuiMode {
+			// Extract the TUI process name from the command (first word)
+			fields := strings.Fields(cmd)
+			if len(fields) > 0 {
+				tuiLabel = fields[0]
+				// Strip sudo prefix
+				if tuiLabel == "sudo" && len(fields) > 1 {
+					tuiLabel = fields[1]
+				}
+			}
+		}
+
 		pairs = append(pairs, CommandPair{
 			Index:     len(pairs) + 1,
 			Command:   cmd,
 			Output:    output,
 			Timestamp: b.ts,
 			Targets:   targets,
+			TUIMode:   tuiMode,
+			TUILabel:  tuiLabel,
 		})
 	}
 

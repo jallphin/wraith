@@ -75,7 +75,17 @@ Include a 'cmd_refs' array that lists the [cmd:N] indices of the commands that d
 			}
 			// Cap each command output hard at 15 lines to stay lean.
 			out := truncateLines(pair.Output, 15)
-			b.WriteString(fmt.Sprintf("[cmd:%d] $ %s\n", pair.Index, pair.Command))
+			if pair.TUIMode {
+				// TUI session — label it clearly so the AI doesn't misread
+				// keystroke reconstruction artifacts as shell syntax.
+				label := pair.TUILabel
+				if label == "" {
+					label = "TUI"
+				}
+				b.WriteString(fmt.Sprintf("[cmd:%d] $ %s  [TUI session: %s — content below]\n", pair.Index, pair.Command, label))
+			} else {
+				b.WriteString(fmt.Sprintf("[cmd:%d] $ %s\n", pair.Index, pair.Command))
+			}
 			if out != "" {
 				b.WriteString(out)
 				if !strings.HasSuffix(out, "\n") {
