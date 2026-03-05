@@ -1,6 +1,7 @@
 package synthesize
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"reflect"
@@ -17,10 +18,11 @@ const defaultMaxOutputLines = 50
 const promptLookbackLimit = 80
 
 var (
-	ansiRegex     = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[@-_][0-?]*[ -/]*[@-~]`)
-	ipv4Regex     = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-	hostnameRegex = regexp.MustCompile(`\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z]{2,})+\b`)
-	promptMarkers = []string{"$ ", "# ", "❯ ", "> "}
+	ansiRegex       = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[@-_][0-?]*[ -/]*[@-~]`)
+	ipv4Regex       = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	hostnameRegex   = regexp.MustCompile(`\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z]{2,})+\b`)
+	promptMarkers   = []string{"$ ", "# ", "❯ ", "> "}
+	findNotFoundCmd = regexp.MustCompile(`(?m)Command '([^']+)' not found`)
 )
 
 type CommandPair struct {
@@ -31,6 +33,7 @@ type CommandPair struct {
 	Targets   []string
 	TUIMode   bool   // true if this command launched a full-screen TUI (vim, nano, etc.)
 	TUILabel  string // name of the TUI process, e.g. "nano"
+	Source    string // "output-osc8003", "output-prompt", or "input" (v2 fallback)
 }
 
 // tuiWindow records a period when the terminal was in alternate-screen mode.
@@ -80,7 +83,353 @@ func StripANSI(b []byte) string {
 	return ansiRegex.ReplaceAllString(string(b), "")
 }
 
+func extractFromOutput(events []store.Event) []CommandPair {
+	type indexTimestamp struct {
+		idx int
+		ts  time.Time
+	}
+	var (
+		stream        []byte
+		indexTimeline []indexTimestamp
+	)
+	for _, ev := range events {
+		if ev.Kind != store.EventOutput {
+			continue
+		}
+		indexTimeline = append(indexTimeline, indexTimestamp{idx: len(stream), ts: ev.Timestamp})
+		stream = append(stream, ev.Data...)
+	}
+	if len(stream) == 0 {
+		return nil
+	}
+	getTimestamp := func(pos int) time.Time {
+		for i := len(indexTimeline) - 1; i >= 0; i-- {
+			if pos >= indexTimeline[i].idx {
+				return indexTimeline[i].ts
+			}
+		}
+		return time.Time{}
+	}
+
+	altScreenEnter := regexp.MustCompile(`\x1b\[(?:\?1049|\?1047|\?47)h`)
+	altScreenExit := regexp.MustCompile(`\x1b\[(?:\?1049|\?1047|\?47)l`)
+	var (
+		tuiWindows []tuiWindow
+		tuiOpen    *tuiWindow
+	)
+	for _, ev := range events {
+		if ev.Kind != store.EventOutput {
+			continue
+		}
+		raw := string(ev.Data)
+		if altScreenEnter.MatchString(raw) && tuiOpen == nil {
+			w := tuiWindow{start: ev.Timestamp}
+			tuiWindows = append(tuiWindows, w)
+			tuiOpen = &tuiWindows[len(tuiWindows)-1]
+		}
+		if altScreenExit.MatchString(raw) && tuiOpen != nil {
+			tuiOpen.end = ev.Timestamp
+			tuiOpen = nil
+		}
+	}
+	inTUIWindow := func(t time.Time) bool {
+		for _, w := range tuiWindows {
+			if t.Before(w.start) {
+				continue
+			}
+			if w.end.IsZero() || t.Before(w.end) {
+				return true
+			}
+		}
+		return false
+	}
+
+	const oscPrefix = "\x1b]8003;"
+	const oscST = "\x1b\\"
+	type oscStart struct {
+		id          string
+		startIdx    int
+		outputStart int
+		timestamp   time.Time
+	}
+	var starts []oscStart
+	prefixBytes := []byte(oscPrefix)
+	stBytes := []byte(oscST)
+	for cur := 0; cur < len(stream); {
+		idx := bytes.Index(stream[cur:], prefixBytes)
+		if idx == -1 {
+			break
+		}
+		startIdx := cur + idx
+		metaStart := startIdx + len(prefixBytes)
+		stIdx := bytes.Index(stream[metaStart:], stBytes)
+		if stIdx == -1 {
+			break
+		}
+		metaEnd := metaStart + stIdx
+		outputStart := metaEnd + len(stBytes)
+		metaData := stream[metaStart:metaEnd]
+		var (
+			id  string
+			typ string
+		)
+		for _, part := range bytes.Split(metaData, []byte(";")) {
+			if len(part) == 0 {
+				continue
+			}
+			kv := bytes.SplitN(part, []byte("="), 2)
+			if len(kv) != 2 {
+				continue
+			}
+			key := string(kv[0])
+			val := string(kv[1])
+			switch key {
+			case "start":
+				id = val
+			case "type":
+				typ = val
+			}
+		}
+		if typ == "command" && id != "" {
+			starts = append(starts, oscStart{
+				id:          id,
+				startIdx:    startIdx,
+				outputStart: outputStart,
+				timestamp:   getTimestamp(startIdx),
+			})
+		}
+		cur = outputStart
+	}
+	if len(starts) == 0 {
+		return extractFromOutputPrompts(events, inTUIWindow)
+	}
+	type oscEnd struct {
+		id  string
+		idx int
+	}
+	var ends []oscEnd
+	for cur := 0; cur < len(stream); {
+		idx := bytes.Index(stream[cur:], prefixBytes)
+		if idx == -1 {
+			break
+		}
+		markerStart := cur + idx
+		metaStart := markerStart + len(prefixBytes)
+		stIdx := bytes.Index(stream[metaStart:], stBytes)
+		if stIdx == -1 {
+			break
+		}
+		metaEnd := metaStart + stIdx
+		metaData := stream[metaStart:metaEnd]
+		var id string
+		for _, part := range bytes.Split(metaData, []byte(";")) {
+			if len(part) == 0 {
+				continue
+			}
+			kv := bytes.SplitN(part, []byte("="), 2)
+			if len(kv) != 2 {
+				continue
+			}
+			if string(kv[0]) == "end" {
+				id = string(kv[1])
+				break
+			}
+		}
+		if id != "" {
+			ends = append(ends, oscEnd{id: id, idx: markerStart})
+		}
+		cur = metaEnd + len(stBytes)
+	}
+	endsByID := map[string][]int{}
+	for _, end := range ends {
+		endsByID[end.id] = append(endsByID[end.id], end.idx)
+	}
+	var pairs []CommandPair
+	for _, start := range starts {
+		endList := endsByID[start.id]
+		for len(endList) > 0 && endList[0] < start.outputStart {
+			endList = endList[1:]
+		}
+		if len(endList) == 0 {
+			continue
+		}
+		endIdx := endList[0]
+		endsByID[start.id] = endList[1:]
+		cmd := extractCommandEcho(stream, start.startIdx)
+		if cmd == "" {
+			continue
+		}
+		rawOutput := stream[start.outputStart:endIdx]
+		cleanOutput := cleanOutputText(rawOutput)
+		output := TruncateOutput(cleanOutput, defaultMaxOutputLines)
+		pair := buildCommandPair(cmd, output, start.timestamp, inTUIWindow, "output-osc8003")
+		pair.Index = len(pairs) + 1
+		pairs = append(pairs, pair)
+	}
+	if len(pairs) == 0 {
+		return extractFromOutputPrompts(events, inTUIWindow)
+	}
+	return pairs
+}
+
+func extractFromOutputPrompts(events []store.Event, inTUIWindow func(time.Time) bool) []CommandPair {
+	type pendingCmd struct {
+		cmd    string
+		ts     time.Time
+		output strings.Builder
+	}
+	var (
+		pairs   []CommandPair
+		pending *pendingCmd
+		buffer  string
+	)
+	finalize := func() {
+		if pending == nil || pending.cmd == "" {
+			return
+		}
+		outputText := strings.TrimSpace(pending.output.String())
+		pair := buildCommandPair(pending.cmd, TruncateOutput(outputText, defaultMaxOutputLines), pending.ts, inTUIWindow, "output-prompt")
+		pair.Index = len(pairs) + 1
+		pairs = append(pairs, pair)
+		pending = nil
+	}
+	for _, ev := range events {
+		if ev.Kind != store.EventOutput {
+			continue
+		}
+		text := cleanOutputText(ev.Data)
+		if text == "" {
+			continue
+		}
+		chunk := buffer + text
+		buffer = ""
+		lines := strings.Split(chunk, "\n")
+		if !strings.HasSuffix(chunk, "\n") {
+			buffer = lines[len(lines)-1]
+			lines = lines[:len(lines)-1]
+		}
+		for _, line := range lines {
+			if cmdText, ok := detectPrompt(line); ok {
+				trimmed := strings.TrimSpace(cmdText)
+				if trimmed == "" {
+					pending = nil
+					continue
+				}
+				finalize()
+				pending = &pendingCmd{cmd: trimmed, ts: ev.Timestamp}
+				continue
+			}
+			if pending != nil {
+				pending.output.WriteString(line)
+				pending.output.WriteByte('\n')
+			}
+		}
+	}
+	if buffer != "" && pending != nil {
+		pending.output.WriteString(buffer)
+	}
+	finalize()
+	return pairs
+}
+
+func cleanOutputText(raw []byte) string {
+	text := StripANSI(raw)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return text
+}
+
+func extractCommandEcho(stream []byte, startIdx int) string {
+	const lookback = 1024
+	begin := startIdx - lookback
+	if begin < 0 {
+		begin = 0
+	}
+	snippet := stream[begin:startIdx]
+	text := cleanOutputText(snippet)
+	if idx := strings.LastIndex(text, "\n"); idx >= 0 {
+		text = text[idx+1:]
+	}
+	return strings.TrimSpace(text)
+}
+
+func buildCommandPair(cmd, output string, ts time.Time, inTUIWindow func(time.Time) bool, source string) CommandPair {
+	normalized := cmd
+	if strings.Contains(normalized, "apt install") && !strings.Contains(normalized, "apt install ") {
+		normalized = strings.Replace(normalized, "apt install", "apt install ", 1)
+		normalized = strings.Join(strings.Fields(normalized), " ")
+	}
+	if m := findNotFoundCmd.FindStringSubmatch(output); len(m) == 2 {
+		x := m[1]
+		parts := strings.Fields(normalized)
+		if len(parts) > 0 && parts[0] != x {
+			args := ""
+			if len(parts) > 1 {
+				args = " " + strings.Join(parts[1:], " ")
+			}
+			normalized = x + args
+		}
+	}
+	if strings.TrimSpace(normalized) == "s" {
+		lowerOut := strings.ToLower(output)
+		if strings.Contains(lowerOut, "nmap") && (strings.Contains(lowerOut, "nmap scan") || strings.Contains(lowerOut, "starting nmap")) {
+			normalized = "sudo nmap"
+		}
+	}
+	targetSource := normalized
+	if output != "" {
+		if targetSource != "" {
+			targetSource += "\n"
+		}
+		targetSource += output
+	}
+	targets := extractTargets(targetSource)
+	tuiMode := inTUIWindow(ts)
+	tuiLabel := ""
+	if tuiMode {
+		fields := strings.Fields(normalized)
+		if len(fields) > 0 {
+			tuiLabel = fields[0]
+			if tuiLabel == "sudo" && len(fields) > 1 {
+				tuiLabel = fields[1]
+			}
+		}
+	}
+	return CommandPair{
+		Command:   normalized,
+		Output:    output,
+		Timestamp: ts,
+		Targets:   targets,
+		TUIMode:   tuiMode,
+		TUILabel:  tuiLabel,
+		Source:    source,
+	}
+}
+
 func ExtractCommandPairs(events []store.Event) []CommandPair {
+	if outputPairs := extractFromOutput(events); len(outputPairs) > 0 {
+		pairs := outputPairs
+		for _, ev := range events {
+			if ev.Kind != store.EventNote || ev.Note == "" {
+				continue
+			}
+			pairs = append(pairs, CommandPair{
+				Index:     len(pairs) + 1,
+				Command:   "[operator note]",
+				Output:    ev.Note,
+				Timestamp: ev.Timestamp,
+				Targets:   extractTargets(ev.Note),
+			})
+		}
+		sort.Slice(pairs, func(i, j int) bool {
+			return pairs[i].Timestamp.Before(pairs[j].Timestamp)
+		})
+		for i := range pairs {
+			pairs[i].Index = i + 1
+		}
+		return pairs
+	}
+
 	type boundary struct {
 		cmd string
 		ts  time.Time
@@ -342,7 +691,7 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 					}
 				case b >= 0x20 && b <= 0x7e:
 					edInsert(b)
-				// All other control bytes (0x00–0x1F not handled above) — discard
+					// All other control bytes (0x00–0x1F not handled above) — discard
 				}
 			}
 		}
@@ -408,8 +757,6 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 		}
 	}
 
-	findNotFoundCmd := regexp.MustCompile(`(?m)Command '([^']+)' not found`)
-
 	// Build output per command in one linear pass: advance a single pointer
 	// through outputChunks as we iterate boundaries (both are sorted by ts).
 	var pairs []CommandPair
@@ -434,67 +781,9 @@ func ExtractCommandPairs(events []store.Event) []CommandPair {
 		}
 
 		output := TruncateOutput(sb.String(), defaultMaxOutputLines)
-
-		cmd := b.cmd
-		// Heuristic: fix common apt case where a space sometimes goes missing in captured input.
-		if strings.Contains(cmd, "apt install") && !strings.Contains(cmd, "apt install ") {
-			cmd = strings.Replace(cmd, "apt install", "apt install ", 1)
-			cmd = strings.Join(strings.Fields(cmd), " ")
-		}
-		// Heuristic: if output reports "Command 'X' not found" then the command token was X.
-		if m := findNotFoundCmd.FindStringSubmatch(output); len(m) == 2 {
-			x := m[1]
-			parts := strings.Fields(cmd)
-			if len(parts) > 0 && parts[0] != x {
-				args := ""
-				if len(parts) > 1 {
-					args = " " + strings.Join(parts[1:], " ")
-				}
-				cmd = x + args
-			}
-		}
-
-		// Heuristic: some sessions have incomplete input capture; if output indicates an nmap run, label it accordingly.
-		if strings.TrimSpace(cmd) == "s" {
-			lowerOut := strings.ToLower(output)
-			if strings.Contains(lowerOut, "nmap") && (strings.Contains(lowerOut, "nmap scan") || strings.Contains(lowerOut, "starting nmap")) {
-				cmd = "sudo nmap"
-			}
-		}
-
-		targetSource := cmd
-		if output != "" {
-			if targetSource != "" {
-				targetSource += "\n"
-			}
-			targetSource += output
-		}
-		targets := extractTargets(targetSource)
-
-		// Check if this command launched a TUI (alternate-screen active shortly after)
-		tuiMode := inTUIWindow(b.ts)
-		tuiLabel := ""
-		if tuiMode {
-			// Extract the TUI process name from the command (first word)
-			fields := strings.Fields(cmd)
-			if len(fields) > 0 {
-				tuiLabel = fields[0]
-				// Strip sudo prefix
-				if tuiLabel == "sudo" && len(fields) > 1 {
-					tuiLabel = fields[1]
-				}
-			}
-		}
-
-		pairs = append(pairs, CommandPair{
-			Index:     len(pairs) + 1,
-			Command:   cmd,
-			Output:    output,
-			Timestamp: b.ts,
-			Targets:   targets,
-			TUIMode:   tuiMode,
-			TUILabel:  tuiLabel,
-		})
+		pair := buildCommandPair(b.cmd, output, b.ts, inTUIWindow, "input")
+		pair.Index = len(pairs) + 1
+		pairs = append(pairs, pair)
 	}
 
 	// Phase 3: inject operator notes as special command pairs
